@@ -27,7 +27,6 @@ const uint8_t V_RESOLUTION_BITMASK = (1 << 0);
 const uint8_t H_RESOLUTION_BITMASK = (1 << 2);
 const uint32_t V_SCROLL_USAGE = 0x00010038;
 const uint32_t H_SCROLL_USAGE = 0x000C0238;
-const uint32_t LEFT_GUI_USAGE = 0x000700E3;
 
 const uint8_t NLAYERS = 4;
 const uint32_t LAYERS_USAGE_PAGE = 0xFFF10000;
@@ -104,7 +103,7 @@ std::queue<macro_entry_t> macro_queue;
 uint32_t reports_received;
 uint32_t reports_sent;
 uint32_t processing_time;
-volatile uint64_t left_gui_pulse_until = 0;
+std::unordered_set<uint32_t> injected_keys;
 
 bool expression_valid[NEXPRESSIONS] = { false };
 
@@ -1370,17 +1369,34 @@ void process_mapping(bool auto_repeat) {
         put_bits(reports[our_dpad_usage.report_id], report_sizes[our_dpad_usage.report_id], our_dpad_usage.bitpos, our_dpad_usage.size, dpad_val);
     }
 
-    if (left_gui_pulse_until != 0) {
-        if (get_time() < left_gui_pulse_until) {
-            auto search = our_usages_flat.find(LEFT_GUI_USAGE);
-            if (search != our_usages_flat.end()) {
-                const usage_def_t& our_usage = search->second;
-                put_bits(reports[our_usage.report_id], report_sizes[our_usage.report_id], our_usage.bitpos, our_usage.size, 1);
+    my_mutex_enter(MutexId::INJECTED_KEYS);
+    if (!injected_keys.empty()) {
+        for (uint32_t usage : injected_keys) {
+            bool handled = false;
+            for (auto const& array_usage : our_array_range_usages) {
+                if ((usage >= array_usage.usage) && (usage <= array_usage.usage_def.usage_maximum)) {
+                    const uint8_t report_id = array_usage.usage_def.report_id;
+                    for (unsigned int i = 0; i < array_usage.usage_def.count; i++) {
+                        int32_t existing_val = get_bits(reports[report_id], report_sizes[report_id], array_usage.usage_def.bitpos + i * array_usage.usage_def.size, array_usage.usage_def.size);
+                        if (existing_val == 0) {
+                            put_bits(reports[report_id], report_sizes[report_id], array_usage.usage_def.bitpos + i * array_usage.usage_def.size, array_usage.usage_def.size, array_usage.usage_def.logical_minimum + usage - array_usage.usage);
+                            break;
+                        }
+                    }
+                    handled = true;
+                    break;
+                }
             }
-        } else {
-            left_gui_pulse_until = 0;
+            if (!handled) {
+                auto search = our_usages_flat.find(usage);
+                if (search != our_usages_flat.end()) {
+                    const usage_def_t& our_usage = search->second;
+                    put_bits(reports[our_usage.report_id], report_sizes[our_usage.report_id], our_usage.bitpos, our_usage.size, 1);
+                }
+            }
         }
     }
+    my_mutex_exit(MutexId::INJECTED_KEYS);
 
     for (auto state : relative_usages) {
         *state = 0;
@@ -2049,8 +2065,22 @@ void reset_state() {
     frame_counter = 0;
 }
 
-void trigger_left_gui_pulse(uint16_t duration_ms) {
-    left_gui_pulse_until = get_time() + (uint64_t) duration_ms * 1000;
+void inject_key_down(uint32_t usage) {
+    my_mutex_enter(MutexId::INJECTED_KEYS);
+    injected_keys.insert(usage);
+    my_mutex_exit(MutexId::INJECTED_KEYS);
+}
+
+void inject_key_up(uint32_t usage) {
+    my_mutex_enter(MutexId::INJECTED_KEYS);
+    injected_keys.erase(usage);
+    my_mutex_exit(MutexId::INJECTED_KEYS);
+}
+
+void inject_clear_keys() {
+    my_mutex_enter(MutexId::INJECTED_KEYS);
+    injected_keys.clear();
+    my_mutex_exit(MutexId::INJECTED_KEYS);
 }
 
 void set_monitor_enabled(bool enabled) {

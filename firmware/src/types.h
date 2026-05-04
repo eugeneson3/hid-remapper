@@ -32,7 +32,9 @@ enum class ConfigCommand : int8_t {
     CLEAR_QUIRKS = 23,
     ADD_QUIRK = 24,
     GET_QUIRK = 25,
-    TRIGGER_LEFT_GUI_PULSE = 26,
+    INJECT_KEY_DOWN = 26,
+    INJECT_KEY_UP = 27,
+    INJECT_CLEAR_KEYS = 28,
 };
 
 struct usage_def_t {
@@ -199,6 +201,10 @@ struct __attribute__((packed)) set_feature_t {
     ConfigCommand command;
     uint8_t data[26];
     uint32_t crc32;
+};
+
+struct __attribute__((packed)) inject_key_t {
+    uint32_t usage;
 };
 
 struct __attribute__((packed)) get_feature_t {
@@ -383,6 +389,7 @@ enum class MutexId : int8_t {
     MACROS,
     EXPRESSIONS,
     QUIRKS,
+    INJECTED_KEYS,
     N
 };
 

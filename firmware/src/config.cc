@@ -1113,8 +1113,18 @@ void handle_set_report1(uint8_t report_id, uint8_t const* buffer, uint16_t bufsi
                     my_mutex_exit(MutexId::QUIRKS);
                     break;
                 }
-                case ConfigCommand::TRIGGER_LEFT_GUI_PULSE:
-                    trigger_left_gui_pulse(50);
+                case ConfigCommand::INJECT_KEY_DOWN: {
+                    inject_key_t* key = (inject_key_t*) config_buffer->data;
+                    inject_key_down(key->usage);
+                    break;
+                }
+                case ConfigCommand::INJECT_KEY_UP: {
+                    inject_key_t* key = (inject_key_t*) config_buffer->data;
+                    inject_key_up(key->usage);
+                    break;
+                }
+                case ConfigCommand::INJECT_CLEAR_KEYS:
+                    inject_clear_keys();
                     break;
                 default:
                     last_config_command = ConfigCommand::INVALID_COMMAND;

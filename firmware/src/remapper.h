@@ -38,7 +38,9 @@ void send_out_report();
 bool send_monitor_report(send_report_t do_send_report);
 void print_stats();
 void reset_state();
-void trigger_left_gui_pulse(uint16_t duration_ms);
+void inject_key_down(uint32_t usage);
+void inject_key_up(uint32_t usage);
+void inject_clear_keys();
 
 void set_monitor_enabled(bool enabled);
 void monitor_usage(uint32_t usage, int32_t value, uint8_t hub_port);
