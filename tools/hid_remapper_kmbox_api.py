@@ -20,6 +20,8 @@ COMMAND_SET_MONITOR_ENABLED = 22
 COMMAND_INJECT_KEY_DOWN = 26
 COMMAND_INJECT_KEY_UP = 27
 COMMAND_INJECT_CLEAR_KEYS = 28
+CONFIG_USAGE = 0x20
+MONITOR_USAGE = 0x21
 
 KEY_NAME_TO_HID = {
     "a": 0x04,
@@ -139,7 +141,7 @@ def build_command_report(command: int, data: bytes = b"") -> bytes:
     return bytes([REPORT_ID_CONFIG]) + bytes(payload)
 
 
-def open_config_device(path: str | None = None) -> hid.device:
+def open_device(path: str | None = None, usage: int | None = None) -> hid.device:
     if path:
         dev = hid.device()
         dev.open_path(path.encode())
@@ -149,12 +151,12 @@ def open_config_device(path: str | None = None) -> hid.device:
     if not candidates:
         raise RuntimeError("HID Remapper device not found.")
 
-    candidates.sort(
-        key=lambda d: (
-            d.get("usage_page") != 0xFF00,
-            d.get("interface_number", 99),
-        )
-    )
+    if usage is not None:
+        candidates = [d for d in candidates if d.get("usage_page") == 0xFF00 and d.get("usage") == usage]
+        if not candidates:
+            raise RuntimeError(f"HID Remapper usage 0x{usage:02X} interface not found.")
+
+    candidates.sort(key=lambda d: (d.get("usage_page") != 0xFF00, d.get("interface_number", 99), d.get("usage", 99)))
 
     last_error: Exception | None = None
     for info in candidates:
@@ -166,6 +168,14 @@ def open_config_device(path: str | None = None) -> hid.device:
             last_error = exc
 
     raise RuntimeError(f"Could not open HID Remapper device: {last_error}")
+
+
+def open_config_device(path: str | None = None) -> hid.device:
+    return open_device(path, CONFIG_USAGE)
+
+
+def open_monitor_device(path: str | None = None) -> hid.device:
+    return open_device(path, MONITOR_USAGE)
 
 
 def send_command(dev: hid.device, command: int, data: bytes = b"") -> None:
@@ -212,26 +222,36 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        dev = open_config_device(args.path)
         if args.command == "key-down":
+            dev = open_config_device(args.path)
             send_key(dev, COMMAND_INJECT_KEY_DOWN, args.key)
+            dev.close()
         elif args.command == "key-up":
+            dev = open_config_device(args.path)
             send_key(dev, COMMAND_INJECT_KEY_UP, args.key)
+            dev.close()
         elif args.command == "press":
+            dev = open_config_device(args.path)
             send_key(dev, COMMAND_INJECT_KEY_DOWN, args.key)
             time.sleep(max(0.0, args.duration))
             send_key(dev, COMMAND_INJECT_KEY_UP, args.key)
+            dev.close()
         elif args.command == "clear":
+            dev = open_config_device(args.path)
             send_command(dev, COMMAND_INJECT_CLEAR_KEYS)
+            dev.close()
         elif args.command == "listen-gpio5":
-            send_command(dev, COMMAND_SET_MONITOR_ENABLED, b"\x01")
+            config_dev = open_config_device(args.path)
+            send_command(config_dev, COMMAND_SET_MONITOR_ENABLED, b"\x01")
+            config_dev.close()
+
+            dev = open_monitor_device()
             print("listening for GPIO5 falling edge: usage=0xFFF40005 value=1", flush=True)
             for usage, value, hub_port in iter_monitor_reports(dev):
                 if usage == (GPIO_USAGE_PAGE | 5) and value == 1:
                     print("GPIO5_FALLING", flush=True)
                 else:
                     print(f"usage=0x{usage:08X} value={value} hub_port={hub_port}", flush=True)
-        dev.close()
     except Exception as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
