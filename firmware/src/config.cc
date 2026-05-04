@@ -1113,6 +1113,9 @@ void handle_set_report1(uint8_t report_id, uint8_t const* buffer, uint16_t bufsi
                     my_mutex_exit(MutexId::QUIRKS);
                     break;
                 }
+                case ConfigCommand::TRIGGER_LEFT_GUI_PULSE:
+                    trigger_left_gui_pulse(50);
+                    break;
                 default:
                     last_config_command = ConfigCommand::INVALID_COMMAND;
                     break;

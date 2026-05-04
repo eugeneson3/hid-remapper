@@ -32,6 +32,7 @@ enum class ConfigCommand : int8_t {
     CLEAR_QUIRKS = 23,
     ADD_QUIRK = 24,
     GET_QUIRK = 25,
+    TRIGGER_LEFT_GUI_PULSE = 26,
 };
 
 struct usage_def_t {
