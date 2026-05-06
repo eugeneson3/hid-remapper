@@ -192,6 +192,32 @@ bool needs_to_be_sent(uint8_t report_id) {
     return false;
 }
 
+bool has_relative_data(uint8_t report_id) {
+    for (int i = 0; i < report_sizes[report_id]; i++) {
+        if (reports[report_id][i] & report_masks_relative[report_id][i]) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool replace_queued_absolute_report(uint8_t report_id) {
+    if (has_relative_data(report_id)) {
+        return false;
+    }
+
+    for (uint8_t i = 0; i < or_items; i++) {
+        uint8_t idx = (or_tail + OR_BUFSIZE - 1 - i) % OR_BUFSIZE;
+        if (outgoing_reports[idx][0] == report_id) {
+            memcpy(outgoing_reports[idx] + 1, reports[report_id], report_sizes[report_id]);
+            memcpy(prev_reports[report_id], reports[report_id], report_sizes[report_id]);
+            return true;
+        }
+    }
+
+    return false;
+}
+
 bool is_expr_valid(uint8_t expr) {
     int16_t on_stack = 0;
     for (auto const& elem : expressions[expr]) {
@@ -1428,20 +1454,23 @@ void process_mapping(bool auto_repeat) {
         }
         if (needs_to_be_sent(report_id)) {
             if (or_items == OR_BUFSIZE) {
-                printf("overflow!\n");
-                break;
-            }
-            uint8_t prev = (or_tail + OR_BUFSIZE - 1) % OR_BUFSIZE;
-            if ((or_items > 0) &&
-                (outgoing_reports[prev][0] == report_id) &&
-                !differ_on_absolute(outgoing_reports[prev] + 1, reports[report_id], report_id)) {
-                aggregate_relative(outgoing_reports[prev] + 1, reports[report_id], report_id);
+                if (!replace_queued_absolute_report(report_id)) {
+                    printf("overflow!\n");
+                    break;
+                }
             } else {
-                outgoing_reports[or_tail][0] = report_id;
-                memcpy(outgoing_reports[or_tail] + 1, reports[report_id], report_sizes[report_id]);
-                memcpy(prev_reports[report_id], reports[report_id], report_sizes[report_id]);
-                or_tail = (or_tail + 1) % OR_BUFSIZE;
-                or_items++;
+                uint8_t prev = (or_tail + OR_BUFSIZE - 1) % OR_BUFSIZE;
+                if ((or_items > 0) &&
+                    (outgoing_reports[prev][0] == report_id) &&
+                    !differ_on_absolute(outgoing_reports[prev] + 1, reports[report_id], report_id)) {
+                    aggregate_relative(outgoing_reports[prev] + 1, reports[report_id], report_id);
+                } else {
+                    outgoing_reports[or_tail][0] = report_id;
+                    memcpy(outgoing_reports[or_tail] + 1, reports[report_id], report_sizes[report_id]);
+                    memcpy(prev_reports[report_id], reports[report_id], report_sizes[report_id]);
+                    or_tail = (or_tail + 1) % OR_BUFSIZE;
+                    or_items++;
+                }
             }
         }
         if (our_descriptor->clear_report != nullptr) {
@@ -1475,7 +1504,10 @@ bool send_report(send_report_t do_send_report) {
         sent = do_send_report(0, outgoing_reports[or_head], report_sizes[report_id] + 1);
     }
 
-    // XXX even if not sent?
+    if (!sent) {
+        return false;
+    }
+
     or_head = (or_head + 1) % OR_BUFSIZE;
     or_items--;
 
