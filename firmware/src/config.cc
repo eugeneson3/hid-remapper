@@ -9,6 +9,7 @@
 #include "our_descriptor.h"
 #include "platform.h"
 #include "remapper.h"
+#include "tick.h"
 
 const uint8_t CONFIG_VERSION = 18;
 
@@ -1117,15 +1118,18 @@ void handle_set_report1(uint8_t report_id, uint8_t const* buffer, uint16_t bufsi
                 case ConfigCommand::INJECT_KEY_DOWN: {
                     inject_key_t* key = (inject_key_t*) config_buffer->data;
                     inject_key_down(key->usage, key->ttl_ms);
+                    set_tick_pending();
                     break;
                 }
                 case ConfigCommand::INJECT_KEY_UP: {
                     inject_key_t* key = (inject_key_t*) config_buffer->data;
                     inject_key_up(key->usage);
+                    set_tick_pending();
                     break;
                 }
                 case ConfigCommand::INJECT_CLEAR_KEYS:
                     inject_clear_keys();
+                    set_tick_pending();
                     break;
                 default:
                     last_config_command = ConfigCommand::INVALID_COMMAND;
