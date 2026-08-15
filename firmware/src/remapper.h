@@ -1,6 +1,8 @@
 #ifndef _REMAPPER_H_
 #define _REMAPPER_H_
 
+#include "types.h"
+
 #define OUR_OUT_INTERFACE 0xFFFF
 
 #define GPIO_USAGE_PAGE 0xFFF40000
@@ -31,6 +33,10 @@ void parse_our_descriptor();
 void process_mapping(bool auto_repeat);
 void update_their_descriptor_derivates();
 bool send_report(send_report_t do_send_report);
+void report_send_complete(bool success);
+void request_report_resync();
+void reset_report_delivery();
+void release_all_outputs();
 void queue_out_report(uint16_t interface, uint8_t report_id, const uint8_t* buffer, uint8_t len);
 void queue_set_feature_report(uint16_t interface, uint8_t report_id, const uint8_t* buffer, uint8_t len);
 void queue_get_feature_report(uint16_t interface, uint8_t report_id, uint8_t len);
@@ -38,9 +44,12 @@ void send_out_report();
 bool send_monitor_report(send_report_t do_send_report);
 void print_stats();
 void reset_state();
-void inject_key_down(uint32_t usage);
+
+void inject_key_down(uint32_t usage, uint16_t ttl_ms);
 void inject_key_up(uint32_t usage);
 void inject_clear_keys();
+InjectSyncStatus inject_sync_state(const inject_sync_t& state);
+void fill_inject_sync_response(inject_sync_response_t* response);
 
 void set_monitor_enabled(bool enabled);
 void monitor_usage(uint32_t usage, int32_t value, uint8_t hub_port);

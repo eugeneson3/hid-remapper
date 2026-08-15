@@ -35,6 +35,17 @@ enum class ConfigCommand : int8_t {
     INJECT_KEY_DOWN = 26,
     INJECT_KEY_UP = 27,
     INJECT_CLEAR_KEYS = 28,
+    INJECT_SYNC_STATE = 29,
+};
+
+constexpr uint8_t MAX_INJECTED_USAGES = 16;
+
+enum class InjectSyncStatus : uint8_t {
+    PENDING = 0,
+    DELIVERED = 1,
+    INVALID_COUNT = 2,
+    INVALID_SEQUENCE = 3,
+    NO_KEYBOARD_REPORT = 4,
 };
 
 struct usage_def_t {
@@ -205,7 +216,31 @@ struct __attribute__((packed)) set_feature_t {
 
 struct __attribute__((packed)) inject_key_t {
     uint32_t usage;
+    uint16_t ttl_ms;
 };
+
+// Jarvis sends the complete desired keyboard state rather than independent
+// edges. A sequence is acknowledged only after the corresponding HID input
+// transfer completes successfully.
+struct __attribute__((packed)) inject_sync_t {
+    uint32_t sequence;
+    uint16_t ttl_ms;
+    uint8_t count;
+    uint8_t usages[MAX_INJECTED_USAGES];
+};
+
+struct __attribute__((packed)) inject_sync_response_t {
+    uint32_t requested_sequence;
+    uint32_t delivered_sequence;
+    InjectSyncStatus status;
+    uint8_t count;
+    uint8_t usages[MAX_INJECTED_USAGES];
+    uint8_t outgoing_queue_depth;
+    uint8_t reserved;
+};
+
+static_assert(sizeof(inject_sync_t) <= 26);
+static_assert(sizeof(inject_sync_response_t) == 28);
 
 struct __attribute__((packed)) get_feature_t {
     uint8_t data[28];
@@ -389,7 +424,6 @@ enum class MutexId : int8_t {
     MACROS,
     EXPRESSIONS,
     QUIRKS,
-    INJECTED_KEYS,
     N
 };
 

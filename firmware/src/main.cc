@@ -11,6 +11,7 @@
 #endif
 #include <hardware/flash.h>
 #include <hardware/gpio.h>
+#include <hardware/watchdog.h>
 #include <pico/bootrom.h>
 #include <pico/mutex.h>
 #include <pico/platform.h>
@@ -72,14 +73,14 @@ void __no_inline_not_in_flash_func(sof_handler)(uint32_t frame_count) {
 }
 
 bool do_send_report(uint8_t interface, const uint8_t* report_with_id, uint8_t len) {
-    if (tud_suspended() &&
-        (our_descriptor->should_cause_wakeup != nullptr) &&
-        our_descriptor->should_cause_wakeup(report_with_id[0], report_with_id + 1, len - 1)) {
-        tud_remote_wakeup();
+    if (tud_suspended()) {
+        if ((our_descriptor->should_cause_wakeup != nullptr) &&
+            our_descriptor->should_cause_wakeup(report_with_id[0], report_with_id + 1, len - 1)) {
+            tud_remote_wakeup();
+        }
         return false;
-    } else {
-        return tud_hid_n_report(interface, report_with_id[0], report_with_id + 1, len - 1);
     }
+    return tud_hid_n_report(interface, report_with_id[0], report_with_id + 1, len - 1);
 }
 
 void gpio_pins_init() {
@@ -257,6 +258,9 @@ int main() {
     stdio_init_all();
 
     tud_sof_isr_set(sof_handler);
+    // If the firmware deadlocks, force USB re-enumeration so the PC releases
+    // the last asserted HID state instead of leaving a key stuck forever.
+    watchdog_enable(2000, true);
 
     next_print = time_us_64() + 1000000;
 
@@ -266,6 +270,9 @@ int main() {
         read_report(&new_report, &tick);
         if (new_report) {
             activity_led_on();
+            if (tud_suspended()) {
+                tud_remote_wakeup();
+            }
         }
         if (their_descriptor_updated) {
             update_their_descriptor_derivates();
@@ -303,7 +310,7 @@ int main() {
             set_gpio_dir();
             set_gpio_dir_pending = false;
         }
-        if (tud_hid_n_ready(0) || tud_suspended()) {
+        if (tud_hid_n_ready(0)) {
             send_report(do_send_report);
         }
         if (monitor_enabled && tud_hid_n_ready(1)) {
@@ -321,6 +328,7 @@ int main() {
         print_stats_maybe();
 
         activity_led_off_maybe();
+        watchdog_update();
     }
 
     return 0;
