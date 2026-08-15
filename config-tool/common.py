@@ -5,8 +5,8 @@ import itertools
 import re
 import time
 
-VENDOR_ID = 0x046D
-PRODUCT_ID = 0xC52B
+VENDOR_ID = 0xCAFE
+PRODUCT_ID = 0xBAF2
 
 CONFIG_USAGE_PAGE = 0xFF00
 CONFIG_USAGE = 0x0020

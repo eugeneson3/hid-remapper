@@ -31,10 +31,11 @@
 #include "our_descriptor.h"
 #include "platform.h"
 #include "remapper.h"
-#include "tick.h"
 
-#define USB_VID 0x046D
-#define USB_PID 0xC52B
+// These IDs are bogus. If you want to distribute any hardware using this,
+// you will have to get real ones.
+#define USB_VID 0xCAFE
+#define USB_PID 0xBAF2
 
 tusb_desc_device_t desc_device = {
     .bLength = sizeof(tusb_desc_device_t),
@@ -51,7 +52,7 @@ tusb_desc_device_t desc_device = {
 
     .iManufacturer = 0x01,
     .iProduct = 0x02,
-    .iSerialNumber = 0x03,
+    .iSerialNumber = 0x00,
 
     .bNumConfigurations = 0x01,
 };
@@ -109,7 +110,6 @@ char const* string_desc_arr[] = {
     "RP2040",  // 1: Manufacturer
 #endif
     "HID Remapper XXXX",  // 2: Product
-    "123456789012",       // 3: Serial Number
 };
 
 // Invoked when received GET DEVICE DESCRIPTOR
@@ -179,13 +179,6 @@ uint16_t const* tud_descriptor_string_cb(uint8_t index, uint16_t langid) {
                 _desc_str[1 + chr_count - 4 + i] = id_chars[(unique_id >> (15 - i * 5)) & 0x1F];
             }
         }
-
-        if (index == 3) {
-            uint64_t unique_id = get_unique_id();
-            for (uint8_t i = 0; i < 12; i++) {
-                _desc_str[1 + i] = id_chars[(unique_id >> (55 - i * 5)) & 0x1F];
-            }
-        }
     }
 
     // first byte is length (including header), second byte is string type
@@ -222,48 +215,16 @@ void tud_hid_set_protocol_cb(uint8_t instance, uint8_t protocol) {
 
 void tud_mount_cb() {
     reset_resolution_multiplier();
-    inject_clear_keys();
-    reset_report_delivery();
-    set_tick_pending();
     if (boot_protocol_keyboard) {
         boot_protocol_keyboard = false;
         boot_protocol_updated = true;
     }
 }
 
-void tud_umount_cb() {
-    inject_clear_keys();
-    reset_report_delivery();
-    set_tick_pending();
-}
-
 void tud_suspend_cb(bool remote_wakeup_en) {
-    (void) remote_wakeup_en;
     printf("tud_suspend_cb\n");
-    inject_clear_keys();
-    reset_report_delivery();
-    set_tick_pending();
 }
 
 void tud_resume_cb() {
     printf("tud_resume_cb\n");
-    reset_report_delivery();
-    set_tick_pending();
-}
-
-void tud_hid_report_complete_cb(uint8_t instance, uint8_t const* report, uint16_t len) {
-    (void) report;
-    (void) len;
-    if (instance == 0) {
-        report_send_complete(true);
-    }
-}
-
-void tud_hid_report_failed_cb(uint8_t instance, hid_report_type_t report_type, uint8_t const* report, uint16_t xferred_bytes) {
-    (void) report;
-    (void) xferred_bytes;
-    if ((instance == 0) && (report_type == HID_REPORT_TYPE_INPUT)) {
-        report_send_complete(false);
-        set_tick_pending();
-    }
 }

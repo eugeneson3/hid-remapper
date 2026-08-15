@@ -40,27 +40,12 @@ uint32_t get_gpio_valid_pins_mask() {
 }
 
 static bool reports_received;
-static uint16_t mounted_hid_interfaces[CFG_TUH_DEVICE_MAX + 1] = { 0 };
-
-static void ensure_hid_receive_armed() {
-    for (uint8_t dev_addr = 1; dev_addr <= CFG_TUH_DEVICE_MAX; dev_addr++) {
-        uint16_t interfaces = mounted_hid_interfaces[dev_addr];
-        for (uint8_t instance = 0; interfaces != 0; instance++, interfaces >>= 1) {
-            if ((interfaces & 1) && tuh_hid_mounted(dev_addr, instance) && tuh_hid_receive_ready(dev_addr, instance)) {
-                tuh_hid_receive_report(dev_addr, instance);
-            }
-        }
-    }
-}
 
 void read_report(bool* new_report, bool* tick) {
     *tick = get_and_clear_tick_pending();
 
     reports_received = false;
     tuh_task();
-    // A transient receive-submit failure must not permanently freeze the last
-    // physical keyboard report (the classic physical-key stuck failure).
-    ensure_hid_receive_armed();
     *new_report = reports_received;
 }
 
@@ -93,9 +78,6 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const* desc_re
 
     descriptor_received_callback(vid, pid, desc_report, desc_len, (uint16_t) (dev_addr << 8) | instance, hub_port, itf_num);
 
-    if (instance < 16) {
-        mounted_hid_interfaces[dev_addr] |= 1u << instance;
-    }
     tuh_hid_receive_report(dev_addr, instance);
 }
 
@@ -105,11 +87,7 @@ void umount_callback(uint8_t dev_addr, uint8_t instance) {
 
 void tuh_hid_umount_cb(uint8_t dev_addr, uint8_t instance) {
     printf("tuh_hid_umount_cb\n");
-    if (instance < 16) {
-        mounted_hid_interfaces[dev_addr] &= ~(1u << instance);
-    }
     umount_callback(dev_addr, instance);
-    set_tick_pending();
 }
 
 void report_received_callback(uint8_t dev_addr, uint8_t instance, uint8_t const* report, uint16_t len) {
