@@ -1522,13 +1522,7 @@ bool send_report(send_report_t do_send_report) {
         sent = do_send_report(0, outgoing_reports[or_head], report_sizes[report_id] + 1);
     }
 
-    // TinyUSB did not take ownership of the report. Leave it at the queue
-    // head so the next ready cycle retries the exact state instead of losing
-    // a key-up or key-down event.
-    if (!sent) {
-        return false;
-    }
-
+    // XXX even if not sent?
     or_head = (or_head + 1) % OR_BUFSIZE;
     or_items--;
 

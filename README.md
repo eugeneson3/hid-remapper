@@ -16,7 +16,7 @@ A separate [serial](SERIAL.md) version of the remapper takes inputs from a seria
 
 There's also a [Bluetooth](BLUETOOTH.md) version that runs on nRF52840-based boards, which translates Bluetooth inputs to USB.
 
-The Jarvis Feather build stays on the boot-verified `cb06974` firmware baseline. Its output queue only advances after TinyUSB accepts a HID IN report, and a full queue replaces an older absolute report with the newest keyboard state. This prevents transient USB back-pressure from silently discarding key-down or key-up reports without adding new startup callbacks or watchdog behavior.
+The Jarvis Feather build stays on the boot-verified `cb06974` firmware baseline and preserves its proven USB submission path. If the output queue fills, an older absolute report with the same report ID is replaced by the newest complete keyboard state so a stale key-down cannot outlive a dropped key-up. No startup callbacks, watchdog behavior, or USB protocol changes are added.
 
 ![HID Remapper](images/remapper1.jpg)
 
