@@ -38,7 +38,8 @@ void send_out_report();
 bool send_monitor_report(send_report_t do_send_report);
 void print_stats();
 void reset_state();
-void inject_key_down(uint32_t usage);
+
+void inject_key_down(uint32_t usage, uint16_t ttl_ms);
 void inject_key_up(uint32_t usage);
 void inject_clear_keys();
 

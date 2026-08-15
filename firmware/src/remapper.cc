@@ -38,6 +38,9 @@ const uint32_t MIDI_USAGE_PAGE = 0xFFF70000;
 const uint32_t ROLLOVER_USAGE = 0x00070001;
 
 const uint16_t STACK_SIZE = 16;
+const uint8_t MAX_INJECTED_USAGES = 16;
+const uint16_t INJECT_DEFAULT_TTL_MS = 500;
+const uint16_t INJECT_MAX_TTL_MS = 1000;
 
 const uint8_t resolution_multiplier_masks[] = {
     V_RESOLUTION_BITMASK,
@@ -103,7 +106,6 @@ std::queue<macro_entry_t> macro_queue;
 uint32_t reports_received;
 uint32_t reports_sent;
 uint32_t processing_time;
-std::unordered_set<uint32_t> injected_keys;
 
 bool expression_valid[NEXPRESSIONS] = { false };
 
@@ -125,6 +127,74 @@ std::unordered_map<uint8_t, uint8_t> hub_ports;  // dev_addr -> hub_port
 uint16_t active_ports_mask = 0;
 
 uint8_t dpad_state = 0;
+
+struct injected_usage_t {
+    uint32_t usage = 0;
+    uint64_t expires_at = 0;
+};
+
+injected_usage_t injected_usages[MAX_INJECTED_USAGES];
+
+inline uint32_t get_bits(const uint8_t* data, int len, uint16_t bitpos, uint8_t size);
+inline void put_bits(uint8_t* data, int len, uint16_t bitpos, uint8_t size, uint32_t value);
+
+static uint64_t ttl_deadline_us(uint16_t ttl_ms) {
+    if (ttl_ms == 0) {
+        ttl_ms = INJECT_DEFAULT_TTL_MS;
+    }
+    if (ttl_ms > INJECT_MAX_TTL_MS) {
+        ttl_ms = INJECT_MAX_TTL_MS;
+    }
+    return get_time() + (uint64_t) ttl_ms * 1000;
+}
+
+static void expire_injected_usages(uint64_t now) {
+    for (auto& injected : injected_usages) {
+        if ((injected.usage != 0) && (now >= injected.expires_at)) {
+            injected.usage = 0;
+            injected.expires_at = 0;
+        }
+    }
+}
+
+static void apply_usage_to_reports(uint32_t usage) {
+    if ((usage & 0xFFFF0000) == GPIO_USAGE_PAGE) {
+        put_bits(gpio_out_state, sizeof(gpio_out_state), (uint16_t) (usage & 0xFFFF), 1, 1);
+        return;
+    }
+    if ((usage & 0xFFFF0000) == DPAD_USAGE_PAGE) {
+        put_bits(&dpad_state, sizeof(dpad_state), (uint16_t) (usage & 0xFFFF) - 1, 1, 1);
+        return;
+    }
+
+    for (auto const& array_usage : our_array_range_usages) {
+        if ((usage >= array_usage.usage) && (usage <= array_usage.usage_def.usage_maximum)) {
+            const uint8_t report_id = array_usage.usage_def.report_id;
+            for (unsigned int i = 0; i < array_usage.usage_def.count; i++) {
+                int32_t existing_val = get_bits(reports[report_id], report_sizes[report_id], array_usage.usage_def.bitpos + i * array_usage.usage_def.size, array_usage.usage_def.size);
+                if (existing_val == 0) {
+                    put_bits(reports[report_id], report_sizes[report_id], array_usage.usage_def.bitpos + i * array_usage.usage_def.size, array_usage.usage_def.size, array_usage.usage_def.logical_minimum + usage - array_usage.usage);
+                    return;
+                }
+            }
+            return;
+        }
+    }
+
+    auto search = our_usages_flat.find(usage);
+    if (search != our_usages_flat.end()) {
+        const usage_def_t& our_usage = search->second;
+        put_bits((uint8_t*) reports[our_usage.report_id], report_sizes[our_usage.report_id], our_usage.bitpos, our_usage.size, 1);
+    }
+}
+
+static void apply_injected_usages_to_reports() {
+    for (auto const& injected : injected_usages) {
+        if (injected.usage != 0) {
+            apply_usage_to_reports(injected.usage);
+        }
+    }
+}
 
 inline int32_t handle_scroll(map_source_t& map_source, uint32_t target_usage, int32_t movement, uint64_t now) {
     // movement is always non-zero
@@ -192,23 +262,21 @@ bool needs_to_be_sent(uint8_t report_id) {
     return false;
 }
 
-bool has_relative_data(uint8_t report_id) {
+static bool replace_queued_absolute_report(uint8_t report_id) {
     for (int i = 0; i < report_sizes[report_id]; i++) {
         if (reports[report_id][i] & report_masks_relative[report_id][i]) {
-            return true;
+            return false;
         }
-    }
-    return false;
-}
-
-bool replace_queued_absolute_report(uint8_t report_id) {
-    if (has_relative_data(report_id)) {
-        return false;
     }
 
     for (uint8_t i = 0; i < or_items; i++) {
         uint8_t idx = (or_tail + OR_BUFSIZE - 1 - i) % OR_BUFSIZE;
         if (outgoing_reports[idx][0] == report_id) {
+            for (int j = 0; j < report_sizes[report_id]; j++) {
+                if (outgoing_reports[idx][j + 1] & report_masks_relative[report_id][j]) {
+                    return false;
+                }
+            }
             memcpy(outgoing_reports[idx] + 1, reports[report_id], report_sizes[report_id]);
             memcpy(prev_reports[report_id], reports[report_id], report_sizes[report_id]);
             return true;
@@ -1120,6 +1188,7 @@ void process_mapping(bool auto_repeat) {
     }
 
     uint64_t now = get_time();
+    expire_injected_usages(now);
     frame_counter++;
 
     for (auto& tap_hold : tap_hold_usages) {
@@ -1350,36 +1419,7 @@ void process_mapping(bool auto_repeat) {
     // execute queued macros
     if (!macro_queue.empty()) {
         for (uint32_t usage : macro_queue.front().items) {
-            if ((usage & 0xFFFF0000) == GPIO_USAGE_PAGE) {
-                put_bits(gpio_out_state, sizeof(gpio_out_state), (uint16_t) (usage & 0xFFFF), 1, 1);
-            } else if ((usage & 0xFFFF0000) == DPAD_USAGE_PAGE) {
-                put_bits(&dpad_state, sizeof(dpad_state), (uint16_t) (usage & 0xFFFF) - 1, 1, 1);
-            } else {
-                bool handled = false;
-                for (auto const& array_usage : our_array_range_usages) {
-                    if ((usage >= array_usage.usage) && (usage <= array_usage.usage_def.usage_maximum)) {
-                        const uint8_t report_id = array_usage.usage_def.report_id;
-                        for (unsigned int i = 0; i < array_usage.usage_def.count; i++) {
-                            int32_t existing_val = get_bits(reports[report_id], report_sizes[report_id], array_usage.usage_def.bitpos + i * array_usage.usage_def.size, array_usage.usage_def.size);
-                            // theoretically zero could be a valid index, but let's ignore that for now
-                            if (existing_val == 0) {
-                                put_bits(reports[report_id], report_sizes[report_id], array_usage.usage_def.bitpos + i * array_usage.usage_def.size, array_usage.usage_def.size, array_usage.usage_def.logical_minimum + usage - array_usage.usage);
-                                break;
-                            }
-                        }
-                        // we don't do RollOver
-                        handled = true;
-                        break;
-                    }
-                }
-                if (!handled) {
-                    auto search = our_usages_flat.find(usage);
-                    if (search != our_usages_flat.end()) {
-                        const usage_def_t& our_usage = search->second;
-                        put_bits((uint8_t*) reports[our_usage.report_id], report_sizes[our_usage.report_id], our_usage.bitpos, our_usage.size, 1);
-                    }
-                }
-            }
+            apply_usage_to_reports(usage);
         }
         if (macro_queue.front().duration_left > 0) {
             macro_queue.front().duration_left--;
@@ -1390,39 +1430,12 @@ void process_mapping(bool auto_repeat) {
         }
     }
 
+    apply_injected_usages_to_reports();
+
     if (have_dpad) {
         uint8_t dpad_val = dpad_table[dpad_state];
         put_bits(reports[our_dpad_usage.report_id], report_sizes[our_dpad_usage.report_id], our_dpad_usage.bitpos, our_dpad_usage.size, dpad_val);
     }
-
-    my_mutex_enter(MutexId::INJECTED_KEYS);
-    if (!injected_keys.empty()) {
-        for (uint32_t usage : injected_keys) {
-            bool handled = false;
-            for (auto const& array_usage : our_array_range_usages) {
-                if ((usage >= array_usage.usage) && (usage <= array_usage.usage_def.usage_maximum)) {
-                    const uint8_t report_id = array_usage.usage_def.report_id;
-                    for (unsigned int i = 0; i < array_usage.usage_def.count; i++) {
-                        int32_t existing_val = get_bits(reports[report_id], report_sizes[report_id], array_usage.usage_def.bitpos + i * array_usage.usage_def.size, array_usage.usage_def.size);
-                        if (existing_val == 0) {
-                            put_bits(reports[report_id], report_sizes[report_id], array_usage.usage_def.bitpos + i * array_usage.usage_def.size, array_usage.usage_def.size, array_usage.usage_def.logical_minimum + usage - array_usage.usage);
-                            break;
-                        }
-                    }
-                    handled = true;
-                    break;
-                }
-            }
-            if (!handled) {
-                auto search = our_usages_flat.find(usage);
-                if (search != our_usages_flat.end()) {
-                    const usage_def_t& our_usage = search->second;
-                    put_bits(reports[our_usage.report_id], report_sizes[our_usage.report_id], our_usage.bitpos, our_usage.size, 1);
-                }
-            }
-        }
-    }
-    my_mutex_exit(MutexId::INJECTED_KEYS);
 
     for (auto state : relative_usages) {
         *state = 0;
@@ -1504,10 +1517,7 @@ bool send_report(send_report_t do_send_report) {
         sent = do_send_report(0, outgoing_reports[or_head], report_sizes[report_id] + 1);
     }
 
-    if (!sent) {
-        return false;
-    }
-
+    // XXX even if not sent?
     or_head = (or_head + 1) % OR_BUFSIZE;
     or_items--;
 
@@ -2093,26 +2103,43 @@ void print_stats() {
 void reset_state() {
     memset(registers, 0, sizeof(registers));
     accumulated.clear();
+    inject_clear_keys();
     layer_state_mask = 1;
     frame_counter = 0;
 }
 
-void inject_key_down(uint32_t usage) {
-    my_mutex_enter(MutexId::INJECTED_KEYS);
-    injected_keys.insert(usage);
-    my_mutex_exit(MutexId::INJECTED_KEYS);
+void inject_key_down(uint32_t usage, uint16_t ttl_ms) {
+    if (usage == 0) {
+        return;
+    }
+
+    uint64_t expires_at = ttl_deadline_us(ttl_ms);
+    for (auto& injected : injected_usages) {
+        if (injected.usage == usage) {
+            injected.expires_at = expires_at;
+            return;
+        }
+    }
+    for (auto& injected : injected_usages) {
+        if (injected.usage == 0) {
+            injected.usage = usage;
+            injected.expires_at = expires_at;
+            return;
+        }
+    }
 }
 
 void inject_key_up(uint32_t usage) {
-    my_mutex_enter(MutexId::INJECTED_KEYS);
-    injected_keys.erase(usage);
-    my_mutex_exit(MutexId::INJECTED_KEYS);
+    for (auto& injected : injected_usages) {
+        if (injected.usage == usage) {
+            injected.usage = 0;
+            injected.expires_at = 0;
+        }
+    }
 }
 
 void inject_clear_keys() {
-    my_mutex_enter(MutexId::INJECTED_KEYS);
-    injected_keys.clear();
-    my_mutex_exit(MutexId::INJECTED_KEYS);
+    memset(injected_usages, 0, sizeof(injected_usages));
 }
 
 void set_monitor_enabled(bool enabled) {

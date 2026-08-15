@@ -205,6 +205,7 @@ struct __attribute__((packed)) set_feature_t {
 
 struct __attribute__((packed)) inject_key_t {
     uint32_t usage;
+    uint16_t ttl_ms;
 };
 
 struct __attribute__((packed)) get_feature_t {
@@ -389,7 +390,6 @@ enum class MutexId : int8_t {
     MACROS,
     EXPRESSIONS,
     QUIRKS,
-    INJECTED_KEYS,
     N
 };
 

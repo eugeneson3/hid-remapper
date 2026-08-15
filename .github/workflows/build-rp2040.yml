@@ -45,7 +45,7 @@ jobs:
           cd ..
           mkdir build-feather
           cd build-feather
-          PICO_BOARD=feather_host cmake ..
+          PICO_BOARD=feather_host cmake -DCMAKE_BUILD_TYPE=MinSizeRel ..
           make remapper
           cd ..
           mkdir build-waveshare_rp2040_pizero
@@ -84,7 +84,7 @@ jobs:
           mv build-boards/remapper_dual_combined.uf2 artifacts/remapper_board.uf2
           mv build-board_v7/remapper_dual_combined.uf2 artifacts/remapper_board_v7.uf2
           mv build-board_v8/remapper.uf2 artifacts/remapper_board_v8.uf2
-          mv build-feather/remapper.uf2 artifacts/remapper_feather.uf2
+          mv build-feather/remapper.uf2 artifacts/firmware_nightly.uf2
           mv build-waveshare_rp2040_pizero/remapper.uf2 artifacts/remapper_waveshare_rp2040_pizero.uf2
           mv build-pico2/remapper.uf2 artifacts/remapper_pico2.uf2
           mv build-pico2/remapper_dual_a.uf2 artifacts/remapper_pico2_dual_a.uf2

@@ -32,10 +32,8 @@
 #include "platform.h"
 #include "remapper.h"
 
-// These IDs are bogus. If you want to distribute any hardware using this,
-// you will have to get real ones.
-#define USB_VID 0xCAFE
-#define USB_PID 0xBAF2
+#define USB_VID 0x046D
+#define USB_PID 0xC52B
 
 tusb_desc_device_t desc_device = {
     .bLength = sizeof(tusb_desc_device_t),
@@ -52,7 +50,7 @@ tusb_desc_device_t desc_device = {
 
     .iManufacturer = 0x01,
     .iProduct = 0x02,
-    .iSerialNumber = 0x00,
+    .iSerialNumber = 0x03,
 
     .bNumConfigurations = 0x01,
 };
@@ -110,6 +108,7 @@ char const* string_desc_arr[] = {
     "RP2040",  // 1: Manufacturer
 #endif
     "HID Remapper XXXX",  // 2: Product
+    "123456789012",       // 3: Serial Number
 };
 
 // Invoked when received GET DEVICE DESCRIPTOR
@@ -177,6 +176,13 @@ uint16_t const* tud_descriptor_string_cb(uint8_t index, uint16_t langid) {
             uint64_t unique_id = get_unique_id();
             for (uint8_t i = 0; i < 4; i++) {
                 _desc_str[1 + chr_count - 4 + i] = id_chars[(unique_id >> (15 - i * 5)) & 0x1F];
+            }
+        }
+
+        if (index == 3) {
+            uint64_t unique_id = get_unique_id();
+            for (uint8_t i = 0; i < 12; i++) {
+                _desc_str[1 + i] = id_chars[(unique_id >> (55 - i * 5)) & 0x1F];
             }
         }
     }
