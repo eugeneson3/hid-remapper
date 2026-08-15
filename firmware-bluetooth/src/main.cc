@@ -26,6 +26,7 @@
 #include "our_descriptor.h"
 #include "platform.h"
 #include "remapper.h"
+#include "tick.h"
 
 LOG_MODULE_REGISTER(remapper, LOG_LEVEL_DBG);
 
@@ -86,6 +87,10 @@ K_MSGQ_DEFINE(hogp_ready_q, sizeof(struct hogp_ready_type), CONFIG_BT_MAX_CONN, 
 K_MSGQ_DEFINE(disconnected_q, sizeof(struct disconnected_type), CONFIG_BT_MAX_CONN, 4);
 K_MSGQ_DEFINE(set_report_q, sizeof(struct set_report_type), 8, 4);
 ATOMIC_DEFINE(tick_pending, 1);
+
+void set_tick_pending() {
+    atomic_set_bit(tick_pending, 0);
+}
 
 #define SW0_NODE DT_ALIAS(sw0)
 #if !DT_NODE_HAS_STATUS(SW0_NODE, okay)
