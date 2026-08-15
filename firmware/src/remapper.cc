@@ -36,11 +36,8 @@ const uint32_t REGISTER_USAGE_PAGE = 0xFFF50000;
 const uint32_t MIDI_USAGE_PAGE = 0xFFF70000;
 
 const uint32_t ROLLOVER_USAGE = 0x00070001;
-const uint32_t KEYBOARD_USAGE_PAGE = 0x00070000;
 
 const uint16_t STACK_SIZE = 16;
-const uint16_t INJECT_DEFAULT_TTL_MS = 500;
-const uint16_t INJECT_MAX_TTL_MS = 1000;
 
 const uint8_t resolution_multiplier_masks[] = {
     V_RESOLUTION_BITMASK,
@@ -76,15 +73,9 @@ uint16_t report_sizes[MAX_INPUT_REPORT_ID + 1];
 
 #define OR_BUFSIZE 8
 uint8_t outgoing_reports[OR_BUFSIZE][MAX_REPORT_SIZE + 1];
-uint32_t outgoing_report_sequences[OR_BUFSIZE] = { 0 };
 uint8_t or_head = 0;
 uint8_t or_tail = 0;
 uint8_t or_items = 0;
-bool report_in_flight = false;
-bool report_resync_pending[MAX_INPUT_REPORT_ID + 1] = { false };
-uint64_t next_periodic_report_resync = 0;
-
-const uint32_t PERIODIC_REPORT_RESYNC_US = 100000;
 
 std::vector<uint8_t> report_ids;
 
@@ -112,6 +103,7 @@ std::queue<macro_entry_t> macro_queue;
 uint32_t reports_received;
 uint32_t reports_sent;
 uint32_t processing_time;
+std::unordered_set<uint32_t> injected_keys;
 
 bool expression_valid[NEXPRESSIONS] = { false };
 
@@ -133,114 +125,6 @@ std::unordered_map<uint8_t, uint8_t> hub_ports;  // dev_addr -> hub_port
 uint16_t active_ports_mask = 0;
 
 uint8_t dpad_state = 0;
-
-struct injected_usage_t {
-    uint32_t usage = 0;
-    uint64_t expires_at = 0;
-};
-
-injected_usage_t injected_usages[MAX_INJECTED_USAGES];
-uint32_t inject_requested_sequence = 0;
-uint32_t inject_delivered_sequence = 0;
-InjectSyncStatus inject_sync_status = InjectSyncStatus::DELIVERED;
-uint8_t inject_sync_count = 0;
-uint8_t inject_sync_usages[MAX_INJECTED_USAGES] = { 0 };
-bool injected_report_pending = false;
-
-inline uint32_t get_bits(const uint8_t* data, int len, uint16_t bitpos, uint8_t size);
-inline void put_bits(uint8_t* data, int len, uint16_t bitpos, uint8_t size, uint32_t value);
-
-static uint64_t ttl_deadline_us(uint16_t ttl_ms) {
-    if (ttl_ms == 0) {
-        ttl_ms = INJECT_DEFAULT_TTL_MS;
-    }
-    if (ttl_ms > INJECT_MAX_TTL_MS) {
-        ttl_ms = INJECT_MAX_TTL_MS;
-    }
-    return get_time() + (uint64_t) ttl_ms * 1000;
-}
-
-static void expire_injected_usages(uint64_t now) {
-    bool expired = false;
-    for (auto& injected : injected_usages) {
-        if ((injected.usage != 0) && (now >= injected.expires_at)) {
-            injected.usage = 0;
-            injected.expires_at = 0;
-            expired = true;
-        }
-    }
-    if (expired) {
-        // Force a release report even if a previous attempt was accepted by
-        // the local queue but never reached the host before a suspend/reset.
-        injected_report_pending = true;
-    }
-}
-
-static bool is_keyboard_report(uint8_t report_id) {
-    auto report_search = our_usages.find(report_id);
-    if (report_search != our_usages.end()) {
-        for (auto const& [usage, usage_def] : report_search->second) {
-            (void) usage_def;
-            if ((usage & 0xFFFF0000) == KEYBOARD_USAGE_PAGE) {
-                return true;
-            }
-        }
-    }
-
-    for (auto const& array_usage : our_array_range_usages) {
-        if ((array_usage.usage_def.report_id == report_id) &&
-            ((array_usage.usage & 0xFFFF0000) == KEYBOARD_USAGE_PAGE)) {
-            return true;
-        }
-    }
-    return false;
-}
-
-static void apply_usage_to_reports(uint32_t usage) {
-    if ((usage & 0xFFFF0000) == GPIO_USAGE_PAGE) {
-        put_bits(gpio_out_state, sizeof(gpio_out_state), (uint16_t) (usage & 0xFFFF), 1, 1);
-        return;
-    }
-    if ((usage & 0xFFFF0000) == DPAD_USAGE_PAGE) {
-        put_bits(&dpad_state, sizeof(dpad_state), (uint16_t) (usage & 0xFFFF) - 1, 1, 1);
-        return;
-    }
-
-    for (auto const& array_usage : our_array_range_usages) {
-        if ((usage >= array_usage.usage) && (usage <= array_usage.usage_def.usage_maximum)) {
-            const uint8_t report_id = array_usage.usage_def.report_id;
-            int first_empty = -1;
-            int32_t encoded_usage = array_usage.usage_def.logical_minimum + usage - array_usage.usage;
-            for (unsigned int i = 0; i < array_usage.usage_def.count; i++) {
-                int32_t existing_val = get_bits(reports[report_id], report_sizes[report_id], array_usage.usage_def.bitpos + i * array_usage.usage_def.size, array_usage.usage_def.size);
-                if (existing_val == encoded_usage) {
-                    return;  // Physical and injected copies of a key merge.
-                }
-                if ((existing_val == 0) && (first_empty < 0)) {
-                    first_empty = i;
-                }
-            }
-            if (first_empty >= 0) {
-                put_bits(reports[report_id], report_sizes[report_id], array_usage.usage_def.bitpos + first_empty * array_usage.usage_def.size, array_usage.usage_def.size, encoded_usage);
-            }
-            return;
-        }
-    }
-
-    auto search = our_usages_flat.find(usage);
-    if (search != our_usages_flat.end()) {
-        const usage_def_t& our_usage = search->second;
-        put_bits((uint8_t*) reports[our_usage.report_id], report_sizes[our_usage.report_id], our_usage.bitpos, our_usage.size, 1);
-    }
-}
-
-static void apply_injected_usages_to_reports() {
-    for (auto const& injected : injected_usages) {
-        if (injected.usage != 0) {
-            apply_usage_to_reports(injected.usage);
-        }
-    }
-}
 
 inline int32_t handle_scroll(map_source_t& map_source, uint32_t target_usage, int32_t movement, uint64_t now) {
     // movement is always non-zero
@@ -295,10 +179,6 @@ inline void put_bits(uint8_t* data, int len, uint16_t bitpos, uint8_t size, uint
 }
 
 bool needs_to_be_sent(uint8_t report_id) {
-    if (report_resync_pending[report_id]) {
-        return true;
-    }
-
     uint8_t* report = reports[report_id];
     uint8_t* prev_report = prev_reports[report_id];
     uint8_t* relative = report_masks_relative[report_id];
@@ -309,6 +189,32 @@ bool needs_to_be_sent(uint8_t report_id) {
             return true;
         }
     }
+    return false;
+}
+
+bool has_relative_data(uint8_t report_id) {
+    for (int i = 0; i < report_sizes[report_id]; i++) {
+        if (reports[report_id][i] & report_masks_relative[report_id][i]) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool replace_queued_absolute_report(uint8_t report_id) {
+    if (has_relative_data(report_id)) {
+        return false;
+    }
+
+    for (uint8_t i = 0; i < or_items; i++) {
+        uint8_t idx = (or_tail + OR_BUFSIZE - 1 - i) % OR_BUFSIZE;
+        if (outgoing_reports[idx][0] == report_id) {
+            memcpy(outgoing_reports[idx] + 1, reports[report_id], report_sizes[report_id]);
+            memcpy(prev_reports[report_id], reports[report_id], report_sizes[report_id]);
+            return true;
+        }
+    }
+
     return false;
 }
 
@@ -1214,10 +1120,6 @@ void process_mapping(bool auto_repeat) {
     }
 
     uint64_t now = get_time();
-    if ((now >= next_periodic_report_resync) && (or_items == 0) && !report_in_flight) {
-        request_report_resync();
-    }
-    expire_injected_usages(now);
     frame_counter++;
 
     for (auto& tap_hold : tap_hold_usages) {
@@ -1448,7 +1350,36 @@ void process_mapping(bool auto_repeat) {
     // execute queued macros
     if (!macro_queue.empty()) {
         for (uint32_t usage : macro_queue.front().items) {
-            apply_usage_to_reports(usage);
+            if ((usage & 0xFFFF0000) == GPIO_USAGE_PAGE) {
+                put_bits(gpio_out_state, sizeof(gpio_out_state), (uint16_t) (usage & 0xFFFF), 1, 1);
+            } else if ((usage & 0xFFFF0000) == DPAD_USAGE_PAGE) {
+                put_bits(&dpad_state, sizeof(dpad_state), (uint16_t) (usage & 0xFFFF) - 1, 1, 1);
+            } else {
+                bool handled = false;
+                for (auto const& array_usage : our_array_range_usages) {
+                    if ((usage >= array_usage.usage) && (usage <= array_usage.usage_def.usage_maximum)) {
+                        const uint8_t report_id = array_usage.usage_def.report_id;
+                        for (unsigned int i = 0; i < array_usage.usage_def.count; i++) {
+                            int32_t existing_val = get_bits(reports[report_id], report_sizes[report_id], array_usage.usage_def.bitpos + i * array_usage.usage_def.size, array_usage.usage_def.size);
+                            // theoretically zero could be a valid index, but let's ignore that for now
+                            if (existing_val == 0) {
+                                put_bits(reports[report_id], report_sizes[report_id], array_usage.usage_def.bitpos + i * array_usage.usage_def.size, array_usage.usage_def.size, array_usage.usage_def.logical_minimum + usage - array_usage.usage);
+                                break;
+                            }
+                        }
+                        // we don't do RollOver
+                        handled = true;
+                        break;
+                    }
+                }
+                if (!handled) {
+                    auto search = our_usages_flat.find(usage);
+                    if (search != our_usages_flat.end()) {
+                        const usage_def_t& our_usage = search->second;
+                        put_bits((uint8_t*) reports[our_usage.report_id], report_sizes[our_usage.report_id], our_usage.bitpos, our_usage.size, 1);
+                    }
+                }
+            }
         }
         if (macro_queue.front().duration_left > 0) {
             macro_queue.front().duration_left--;
@@ -1459,12 +1390,39 @@ void process_mapping(bool auto_repeat) {
         }
     }
 
-    apply_injected_usages_to_reports();
-
     if (have_dpad) {
         uint8_t dpad_val = dpad_table[dpad_state];
         put_bits(reports[our_dpad_usage.report_id], report_sizes[our_dpad_usage.report_id], our_dpad_usage.bitpos, our_dpad_usage.size, dpad_val);
     }
+
+    my_mutex_enter(MutexId::INJECTED_KEYS);
+    if (!injected_keys.empty()) {
+        for (uint32_t usage : injected_keys) {
+            bool handled = false;
+            for (auto const& array_usage : our_array_range_usages) {
+                if ((usage >= array_usage.usage) && (usage <= array_usage.usage_def.usage_maximum)) {
+                    const uint8_t report_id = array_usage.usage_def.report_id;
+                    for (unsigned int i = 0; i < array_usage.usage_def.count; i++) {
+                        int32_t existing_val = get_bits(reports[report_id], report_sizes[report_id], array_usage.usage_def.bitpos + i * array_usage.usage_def.size, array_usage.usage_def.size);
+                        if (existing_val == 0) {
+                            put_bits(reports[report_id], report_sizes[report_id], array_usage.usage_def.bitpos + i * array_usage.usage_def.size, array_usage.usage_def.size, array_usage.usage_def.logical_minimum + usage - array_usage.usage);
+                            break;
+                        }
+                    }
+                    handled = true;
+                    break;
+                }
+            }
+            if (!handled) {
+                auto search = our_usages_flat.find(usage);
+                if (search != our_usages_flat.end()) {
+                    const usage_def_t& our_usage = search->second;
+                    put_bits(reports[our_usage.report_id], report_sizes[our_usage.report_id], our_usage.bitpos, our_usage.size, 1);
+                }
+            }
+        }
+    }
+    my_mutex_exit(MutexId::INJECTED_KEYS);
 
     for (auto state : relative_usages) {
         *state = 0;
@@ -1489,63 +1447,36 @@ void process_mapping(bool auto_repeat) {
         }
     }
 
-    bool forced_reports_complete = true;
-    bool saw_keyboard_report = false;
-    int forced_report_slot = -1;
     for (unsigned int i = 0; i < report_ids.size(); i++) {  // XXX what order should we go in? maybe keyboard first so that mappings to ctrl-left click work as expected?
         uint8_t report_id = report_ids[i];
-        bool keyboard_report = is_keyboard_report(report_id);
-        saw_keyboard_report |= keyboard_report;
         if (our_descriptor->sanitize_report != nullptr) {
             our_descriptor->sanitize_report(report_id, reports[report_id], report_sizes[report_id]);
         }
-        bool force_this_report = injected_report_pending && keyboard_report;
-        if (needs_to_be_sent(report_id) || force_this_report) {
+        if (needs_to_be_sent(report_id)) {
             if (or_items == OR_BUFSIZE) {
-                printf("overflow!\n");
-                forced_reports_complete = false;
+                if (!replace_queued_absolute_report(report_id)) {
+                    printf("overflow!\n");
+                    break;
+                }
             } else {
                 uint8_t prev = (or_tail + OR_BUFSIZE - 1) % OR_BUFSIZE;
                 if ((or_items > 0) &&
                     (outgoing_reports[prev][0] == report_id) &&
                     !differ_on_absolute(outgoing_reports[prev] + 1, reports[report_id], report_id)) {
                     aggregate_relative(outgoing_reports[prev] + 1, reports[report_id], report_id);
-                    if (force_this_report) {
-                        forced_report_slot = prev;
-                    }
                 } else {
-                    uint8_t queued_slot = or_tail;
                     outgoing_reports[or_tail][0] = report_id;
                     memcpy(outgoing_reports[or_tail] + 1, reports[report_id], report_sizes[report_id]);
-                    outgoing_report_sequences[or_tail] = 0;
                     memcpy(prev_reports[report_id], reports[report_id], report_sizes[report_id]);
                     or_tail = (or_tail + 1) % OR_BUFSIZE;
                     or_items++;
-                    if (force_this_report) {
-                        forced_report_slot = queued_slot;
-                    }
                 }
-                report_resync_pending[report_id] = false;
             }
         }
         if (our_descriptor->clear_report != nullptr) {
             our_descriptor->clear_report(reports[report_id], report_id, report_sizes[report_id]);
         } else {
             memset(reports[report_id], 0, report_sizes[report_id]);
-        }
-    }
-
-    if (injected_report_pending && forced_reports_complete) {
-        if (!saw_keyboard_report) {
-            if (inject_sync_status == InjectSyncStatus::PENDING) {
-                inject_sync_status = InjectSyncStatus::NO_KEYBOARD_REPORT;
-            }
-            injected_report_pending = false;
-        } else if (forced_report_slot >= 0) {
-            if (inject_sync_status == InjectSyncStatus::PENDING) {
-                outgoing_report_sequences[forced_report_slot] = inject_requested_sequence;
-            }
-            injected_report_pending = false;
         }
     }
 
@@ -1562,7 +1493,7 @@ void process_mapping(bool auto_repeat) {
 }
 
 bool send_report(send_report_t do_send_report) {
-    if (report_in_flight || (or_items == 0)) {
+    if (suspended || (or_items == 0)) {
         return false;
     }
 
@@ -1573,81 +1504,16 @@ bool send_report(send_report_t do_send_report) {
         sent = do_send_report(0, outgoing_reports[or_head], report_sizes[report_id] + 1);
     }
 
-    if (sent) {
-        report_in_flight = true;
+    if (!sent) {
+        return false;
     }
 
-    return sent;
-}
-
-void report_send_complete(bool success) {
-    if (!report_in_flight) {
-        return;
-    }
-
-    report_in_flight = false;
-    if (!success || (or_items == 0)) {
-        return;
-    }
-
-    uint32_t delivered_sequence = outgoing_report_sequences[or_head];
-    outgoing_report_sequences[or_head] = 0;
     or_head = (or_head + 1) % OR_BUFSIZE;
     or_items--;
 
     reports_sent++;
 
-    if (delivered_sequence != 0) {
-        inject_delivered_sequence = delivered_sequence;
-        if ((inject_sync_status == InjectSyncStatus::PENDING) &&
-            (inject_requested_sequence == delivered_sequence)) {
-            inject_sync_status = InjectSyncStatus::DELIVERED;
-        }
-    }
-
-}
-
-void request_report_resync() {
-    for (uint8_t report_id : report_ids) {
-        report_resync_pending[report_id] = true;
-    }
-    next_periodic_report_resync = get_time() + PERIODIC_REPORT_RESYNC_US;
-}
-
-void reset_report_delivery() {
-    or_head = 0;
-    or_tail = 0;
-    or_items = 0;
-    report_in_flight = false;
-    memset(outgoing_report_sequences, 0, sizeof(outgoing_report_sequences));
-    if (inject_sync_status == InjectSyncStatus::PENDING) {
-        injected_report_pending = true;
-    }
-    request_report_resync();
-}
-
-void release_all_outputs() {
-    reset_report_delivery();
-    for (uint8_t report_id : report_ids) {
-        if (our_descriptor->clear_report != nullptr) {
-            our_descriptor->clear_report(reports[report_id], report_id, report_sizes[report_id]);
-        } else {
-            memset(reports[report_id], 0, report_sizes[report_id]);
-        }
-        if (our_descriptor->sanitize_report != nullptr) {
-            our_descriptor->sanitize_report(report_id, reports[report_id], report_sizes[report_id]);
-        }
-        if (or_items == OR_BUFSIZE) {
-            break;
-        }
-        outgoing_reports[or_tail][0] = report_id;
-        memcpy(outgoing_reports[or_tail] + 1, reports[report_id], report_sizes[report_id]);
-        outgoing_report_sequences[or_tail] = 0;
-        memcpy(prev_reports[report_id], reports[report_id], report_sizes[report_id]);
-        report_resync_pending[report_id] = false;
-        or_tail = (or_tail + 1) % OR_BUFSIZE;
-        or_items++;
-    }
+    return sent;
 }
 
 bool send_monitor_report(send_report_t do_send_report) {
@@ -2136,7 +2002,6 @@ void update_their_descriptor_derivates() {
 }
 
 void parse_our_descriptor() {
-    reset_report_delivery();
     std::unordered_map<uint8_t, std::unordered_map<uint32_t, usage_def_t>> our_feature_usages;
 
     our_usages.clear();
@@ -2156,7 +2021,6 @@ void parse_our_descriptor() {
     }
 
     report_ids.clear();
-    memset(report_resync_pending, 0, sizeof(report_resync_pending));
     memset(report_sizes, 0, sizeof(report_sizes));
     memset(reports, 0, sizeof(reports));
     memset(prev_reports, 0, sizeof(prev_reports));
@@ -2183,7 +2047,6 @@ void parse_our_descriptor() {
         memset(report_masks_absolute[report_id], 0, size);
 
         report_ids.push_back(report_id);
-        report_resync_pending[report_id] = true;
     }
 
     std::set<uint64_t> our_usage_ranges_set;
@@ -2230,103 +2093,26 @@ void print_stats() {
 void reset_state() {
     memset(registers, 0, sizeof(registers));
     accumulated.clear();
-    inject_clear_keys();
     layer_state_mask = 1;
     frame_counter = 0;
 }
 
-void inject_key_down(uint32_t usage, uint16_t ttl_ms) {
-    if (usage == 0) {
-        return;
-    }
-
-    uint64_t expires_at = ttl_deadline_us(ttl_ms);
-    for (auto& injected : injected_usages) {
-        if (injected.usage == usage) {
-            injected.expires_at = expires_at;
-            injected_report_pending = true;
-            return;
-        }
-    }
-    for (auto& injected : injected_usages) {
-        if (injected.usage == 0) {
-            injected.usage = usage;
-            injected.expires_at = expires_at;
-            injected_report_pending = true;
-            return;
-        }
-    }
+void inject_key_down(uint32_t usage) {
+    my_mutex_enter(MutexId::INJECTED_KEYS);
+    injected_keys.insert(usage);
+    my_mutex_exit(MutexId::INJECTED_KEYS);
 }
 
 void inject_key_up(uint32_t usage) {
-    for (auto& injected : injected_usages) {
-        if (injected.usage == usage) {
-            injected.usage = 0;
-            injected.expires_at = 0;
-        }
-    }
-    injected_report_pending = true;
+    my_mutex_enter(MutexId::INJECTED_KEYS);
+    injected_keys.erase(usage);
+    my_mutex_exit(MutexId::INJECTED_KEYS);
 }
 
 void inject_clear_keys() {
-    for (auto& injected : injected_usages) {
-        injected = {};
-    }
-    injected_report_pending = true;
-}
-
-InjectSyncStatus inject_sync_state(const inject_sync_t& state) {
-    inject_requested_sequence = state.sequence;
-    if (state.sequence == 0) {
-        inject_sync_status = InjectSyncStatus::INVALID_SEQUENCE;
-        return inject_sync_status;
-    }
-    if (state.count > MAX_INJECTED_USAGES) {
-        inject_sync_status = InjectSyncStatus::INVALID_COUNT;
-        return inject_sync_status;
-    }
-
-    for (auto& injected : injected_usages) {
-        injected = {};
-    }
-    memset(inject_sync_usages, 0, sizeof(inject_sync_usages));
-    inject_sync_count = 0;
-    uint64_t expires_at = ttl_deadline_us(state.ttl_ms);
-    for (uint8_t i = 0; i < state.count; i++) {
-        uint8_t usage_id = state.usages[i];
-        if (usage_id == 0) {
-            continue;
-        }
-        bool duplicate = false;
-        for (uint8_t j = 0; j < inject_sync_count; j++) {
-            if (inject_sync_usages[j] == usage_id) {
-                duplicate = true;
-                break;
-            }
-        }
-        if (!duplicate) {
-            inject_sync_usages[inject_sync_count] = usage_id;
-            injected_usages[inject_sync_count] = (injected_usage_t){
-                .usage = KEYBOARD_USAGE_PAGE | usage_id,
-                .expires_at = expires_at,
-            };
-            inject_sync_count++;
-        }
-    }
-
-    inject_sync_status = InjectSyncStatus::PENDING;
-    injected_report_pending = true;
-    return inject_sync_status;
-}
-
-void fill_inject_sync_response(inject_sync_response_t* response) {
-    memset(response, 0, sizeof(*response));
-    response->requested_sequence = inject_requested_sequence;
-    response->delivered_sequence = inject_delivered_sequence;
-    response->status = inject_sync_status;
-    response->count = inject_sync_count;
-    memcpy(response->usages, inject_sync_usages, sizeof(inject_sync_usages));
-    response->outgoing_queue_depth = or_items;
+    my_mutex_enter(MutexId::INJECTED_KEYS);
+    injected_keys.clear();
+    my_mutex_exit(MutexId::INJECTED_KEYS);
 }
 
 void set_monitor_enabled(bool enabled) {
@@ -2353,9 +2139,6 @@ void device_disconnected_callback(uint8_t dev_addr) {
         active_ports_mask &= ~(1 << hub_port);
     }
     hub_ports.erase(dev_addr);
-    // Discard transitions generated from the detached device and rebuild one
-    // authoritative snapshot from the remaining physical and injected state.
-    reset_report_delivery();
 }
 
 uint16_t handle_get_report0(uint8_t report_id, uint8_t* buffer, uint16_t reqlen) {

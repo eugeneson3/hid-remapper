@@ -16,14 +16,6 @@ A separate [serial](SERIAL.md) version of the remapper takes inputs from a seria
 
 There's also a [Bluetooth](BLUETOOTH.md) version that runs on nRF52840-based boards, which translates Bluetooth inputs to USB.
 
-## Jarvis injection extension
-
-The `jarvis-ttl-injection` branch adds a reliability-focused keyboard injection protocol for the Adafruit Feather RP2040 with USB Host. Command 29 replaces independent edges with an atomic snapshot of up to 16 keyboard usages and a non-zero sequence number. The sequence is acknowledged only after TinyUSB reports completion of the corresponding HID input transfer; failed or suspended transfers remain queued for retry. Commands 26-28 remain available for compatibility.
-
-Injected keys have a bounded TTL, identical physical and injected usages are merged, and authoritative reports are periodically re-sent. USB host receive submission is re-armed after transient failures, disconnect/suspend paths force a neutral snapshot, and a watchdog causes USB re-enumeration if the main loop deadlocks. Together these mechanisms bound both injected-key and physical-pass-through stuck states.
-
-Build the install image with `PICO_BOARD=feather_host`. The `build-feather` workflow also verifies that the UF2 is non-empty and publishes its SHA-256 checksum.
-
 ![HID Remapper](images/remapper1.jpg)
 
 ## How to make the device
