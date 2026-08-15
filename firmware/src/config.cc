@@ -830,6 +830,7 @@ uint16_t handle_get_report1(uint8_t report_id, uint8_t* buffer, uint16_t reqlen)
     if (report_id == REPORT_ID_CONFIG && reqlen >= CONFIG_SIZE) {
         get_feature_t* config_buffer = (get_feature_t*) buffer;
         memset(config_buffer, 0, sizeof(get_feature_t));
+        bool keep_config_command = false;
         switch (last_config_command) {
             case ConfigCommand::INVALID_COMMAND: {
                 memset(config_buffer, 0xFF, sizeof(get_feature_t));
@@ -944,11 +945,19 @@ uint16_t handle_get_report1(uint8_t report_id, uint8_t* buffer, uint16_t reqlen)
                 returned->return_code = persist_config_return_code;
                 break;
             }
+            case ConfigCommand::INJECT_SYNC_STATE: {
+                inject_sync_response_t* response = (inject_sync_response_t*) config_buffer;
+                fill_inject_sync_response(response);
+                keep_config_command = response->status == InjectSyncStatus::PENDING;
+                break;
+            }
             default:
                 return 0;
         }
         config_buffer->crc32 = crc32((uint8_t*) config_buffer, CONFIG_SIZE - 4);
-        last_config_command = ConfigCommand::NO_COMMAND;
+        if (!keep_config_command) {
+            last_config_command = ConfigCommand::NO_COMMAND;
+        }
         return CONFIG_SIZE;
     }
 
@@ -1011,6 +1020,7 @@ void handle_set_report1(uint8_t report_id, uint8_t const* buffer, uint16_t bufsi
                     break;
                 case ConfigCommand::SUSPEND:
                     inject_clear_keys();
+                    release_all_outputs();
                     suspended = true;
                     break;
                 case ConfigCommand::RESUME:
@@ -1131,6 +1141,13 @@ void handle_set_report1(uint8_t report_id, uint8_t const* buffer, uint16_t bufsi
                     inject_clear_keys();
                     set_tick_pending();
                     break;
+                case ConfigCommand::INJECT_SYNC_STATE: {
+                    inject_sync_t* state = (inject_sync_t*) config_buffer->data;
+                    if (inject_sync_state(*state) == InjectSyncStatus::PENDING) {
+                        set_tick_pending();
+                    }
+                    break;
+                }
                 default:
                     last_config_command = ConfigCommand::INVALID_COMMAND;
                     break;

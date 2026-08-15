@@ -28,8 +28,12 @@ jobs:
           cd ..
           mkdir artifacts
           mv build-feather/remapper.uf2 artifacts/remapper_feather.uf2
+          test -s artifacts/remapper_feather.uf2
+          sha256sum artifacts/remapper_feather.uf2 > artifacts/remapper_feather.uf2.sha256
         working-directory: ./firmware
       - uses: actions/upload-artifact@v7
         with:
           name: remapper-feather
-          path: firmware/artifacts/remapper_feather.uf2
+          path: |
+            firmware/artifacts/remapper_feather.uf2
+            firmware/artifacts/remapper_feather.uf2.sha256

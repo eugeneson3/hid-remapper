@@ -31,6 +31,7 @@
 #include "our_descriptor.h"
 #include "platform.h"
 #include "remapper.h"
+#include "tick.h"
 
 #define USB_VID 0x046D
 #define USB_PID 0xC52B
@@ -221,16 +222,48 @@ void tud_hid_set_protocol_cb(uint8_t instance, uint8_t protocol) {
 
 void tud_mount_cb() {
     reset_resolution_multiplier();
+    inject_clear_keys();
+    reset_report_delivery();
+    set_tick_pending();
     if (boot_protocol_keyboard) {
         boot_protocol_keyboard = false;
         boot_protocol_updated = true;
     }
 }
 
+void tud_umount_cb() {
+    inject_clear_keys();
+    reset_report_delivery();
+    set_tick_pending();
+}
+
 void tud_suspend_cb(bool remote_wakeup_en) {
+    (void) remote_wakeup_en;
     printf("tud_suspend_cb\n");
+    inject_clear_keys();
+    reset_report_delivery();
+    set_tick_pending();
 }
 
 void tud_resume_cb() {
     printf("tud_resume_cb\n");
+    reset_report_delivery();
+    set_tick_pending();
+}
+
+void tud_hid_report_complete_cb(uint8_t instance, uint8_t const* report, uint16_t len) {
+    (void) report;
+    (void) len;
+    if (instance == 0) {
+        report_send_complete(true);
+    }
+}
+
+void tud_hid_report_failed_cb(uint8_t instance, hid_report_type_t report_type, uint8_t const* report, uint16_t xferred_bytes) {
+    (void) report;
+    (void) xferred_bytes;
+    if ((instance == 0) && (report_type == HID_REPORT_TYPE_INPUT)) {
+        report_send_complete(false);
+        set_tick_pending();
+    }
 }
