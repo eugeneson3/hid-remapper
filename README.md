@@ -4,10 +4,6 @@ _For user documentation please see the project's website at [remapper.org](https
 
 This is a configurable USB dongle that allows you to remap inputs from mice, keyboards and other devices. It works completely in hardware and requires no software running on the computer during normal use.
 
-## Jarvis Feather nightly
-
-The Jarvis Feather RP2040 nightly stays on the proven `cb06974` behavior and makes one runtime change only: if the eight-entry outgoing queue is full, a queued absolute report with the same report ID may be replaced by the latest complete state. Reports containing relative-axis data are never replaced. There is no periodic resend, transfer callback, watchdog, or queue-size change. Build the Feather image with `PICO_BOARD=feather_host` and `CMAKE_BUILD_TYPE=MinSizeRel`.
-
 It can do things like reassign buttons, change keyboard layouts, map mouse buttons to keyboard inputs, map keystrokes to mouse inputs, change mouse sensitivity (permanently or when a button is held), rotate mouse axes by arbitrary (non-90 degree) angles, drag-lock for mouse buttons, scroll by moving the mouse, and much more.
 
 It is configurable [through a web browser](https://www.remapper.org/config/) using WebHID (Chrome or Chrome-based browser required).
