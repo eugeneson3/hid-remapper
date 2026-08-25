@@ -19,9 +19,17 @@ The Jarvis overlay is deliberately small:
 - keep USB VID/PID `046D:C52B`;
 - use product name `Jarvis QMK Passthrough`;
 - copy the upstream `default` keymap as `jarvis_baseline`;
-- disable console, virtual serial, mouse keys, tap dance, and combos;
+- replace the unused console interface with a read-only Raw HID diagnostic
+  interface, and disable virtual serial, mouse keys, tap dance, and combos;
 - keep NKRO and Consumer/System Control support.
 
-This baseline has no Jarvis command-injection protocol. Do not promote it to
-stable until it passes keyboard-attached power-on, ordinary and modifier input,
-disconnect release, reconnect, and long-duration key-stuck tests on hardware.
+The diagnostic protocol uses Raw HID usage `FF60:0061`. It exposes attached HID
+interface metadata, up to 1024 bytes of each report descriptor, a 32-entry ring
+of raw USB-A reports, and a separate 32-entry ring of parsed keyboard bitsets.
+Commands `D0` through `D4` are read-only and cannot inject keys or alter parser
+state. The host tool in Jarvis is `tools/diagnose_qmk_passthrough.py`.
+
+This baseline still has no Jarvis command-injection protocol. Do not promote it
+to stable until it passes keyboard-attached power-on, ordinary and modifier
+input, disconnect release, reconnect, and long-duration key-stuck tests on
+hardware.

@@ -43,10 +43,15 @@ jobs:
       - name: Apply Jarvis minimal baseline overlay
         run: |
           converter=qmk_firmware/keyboards/converter/adafruit_rp2040_usbh
+          git -C "$converter" apply \
+            "$GITHUB_WORKSPACE/firmware/qmk_passthrough/diagnostics.patch"
+          cp firmware/qmk_passthrough/jarvis_diagnostics.c "$converter/"
+          cp firmware/qmk_passthrough/jarvis_diagnostics.h "$converter/"
           sed -i \
             -e 's/"keyboard_name": "Rp2040 USB Host"/"keyboard_name": "Jarvis QMK Passthrough"/' \
             -e 's/"vid": "0x239A"/"vid": "0x046D"/' \
             -e 's/"pid": "0x0001"/"pid": "0xC52B"/' \
+            -e 's/"console": true/"console": false/' \
             -e 's/"mousekey": true/"mousekey": false/' \
             -e 's/"virtser": true/"virtser": false/' \
             "$converter/info.json"
