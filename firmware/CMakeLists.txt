@@ -28,6 +28,7 @@ add_compile_definitions(GPIO_VALID_PINS_BASE=0b00011100011111111111111111111111)
 endif()
 
 add_executable(c0_passthrough
+    src/c0_passthrough/interval_override.c
     src/c0_passthrough/main.c
     src/c0_passthrough/usb_descriptors.c
 )
