@@ -58,8 +58,9 @@ jobs:
           cp firmware/qmk_passthrough/rules.mk "$converter/keymaps/jarvis_baseline/rules.mk"
       - name: Build Jarvis QMK passthrough firmware
         run: |
-          python3 -m pip install --disable-pip-version-check -r qmk_firmware/requirements.txt
-          export PATH="$PWD/qmk_firmware/bin:$HOME/.local/bin:$PATH"
+          python3 -m pip install --disable-pip-version-check \
+            qmk==1.1.2 -r qmk_firmware/requirements.txt
+          export PATH="$HOME/.local/bin:$PATH"
           make -C qmk_firmware converter/adafruit_rp2040_usbh:jarvis_baseline:uf2
           mkdir artifacts
           cp qmk_firmware/.build/converter_adafruit_rp2040_usbh_jarvis_baseline.uf2 \
