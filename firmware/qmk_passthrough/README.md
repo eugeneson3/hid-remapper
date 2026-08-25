@@ -29,6 +29,12 @@ of raw USB-A reports, and a separate 32-entry ring of parsed keyboard bitsets.
 Commands `D0` through `D4` are read-only and cannot inject keys or alter parser
 state. The host tool in Jarvis is `tools/diagnose_qmk_passthrough.py`.
 
+The first capture-backed parser fix adds `len > 0` to both keyboard report
+loops. A descriptor may declare more array entries than TinyUSB delivered in
+the current callback; the parser must stop at the received length instead of
+reading bytes beyond the report buffer. Report layout, buffer sizes, key state,
+and output behavior are otherwise unchanged.
+
 This baseline still has no Jarvis command-injection protocol. Do not promote it
 to stable until it passes keyboard-attached power-on, ordinary and modifier
 input, disconnect release, reconnect, and long-duration key-stuck tests on

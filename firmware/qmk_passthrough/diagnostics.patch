@@ -43,3 +43,12 @@ diff --git a/rules.mk b/rules.mk
 @@ -1 +1 @@
 -SRC += matrix.c c1_main.c c1_usbh.c tusb_os_custom.c
 +SRC += matrix.c c1_main.c c1_usbh.c tusb_os_custom.c jarvis_diagnostics.c
+diff --git a/parser/report_parser.c b/parser/report_parser.c
+--- a/parser/report_parser.c
++++ b/parser/report_parser.c
+@@ -99 +99 @@ void keyboard_report_parser(hid_report_member_t const *member,
+-        for (int idx = 0; idx < member->global.report_count; idx++) {
++        for (int idx = 0; idx < member->global.report_count && len > 0; idx++) {
+@@ -113 +113 @@ void keyboard_report_parser(hid_report_member_t const *member,
+-        for (int idx = 0; idx < member->global.report_count; idx++) {
++        for (int idx = 0; idx < member->global.report_count && len > 0; idx++) {
