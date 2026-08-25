@@ -27,6 +27,32 @@ if((PICO_BOARD STREQUAL "pico") OR (PICO_BOARD STREQUAL "pico2"))
 add_compile_definitions(GPIO_VALID_PINS_BASE=0b00011100011111111111111111111111)
 endif()
 
+add_executable(c0_passthrough
+    src/c0_passthrough/main.c
+    src/c0_passthrough/usb_descriptors.c
+)
+
+target_include_directories(c0_passthrough PRIVATE
+    src/c0_passthrough
+    ${PICO_PIO_USB_PATH}
+)
+
+target_link_libraries(c0_passthrough
+    pico_stdlib
+    pico_unique_id
+    hardware_pio
+    hardware_dma
+    tinyusb_device
+    tinyusb_host
+    tinyusb_board
+    tinyusb_pico_pio_usb
+)
+
+# Match the known-working Feather single-MCU build: execute from SRAM while
+# native USB handles the PC side and PIO USB handles the keyboard side.
+pico_set_binary_type(c0_passthrough copy_to_ram)
+pico_add_extra_outputs(c0_passthrough)
+
 
 add_executable(remapper
     src/main.cc

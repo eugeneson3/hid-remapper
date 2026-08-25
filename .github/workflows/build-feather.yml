@@ -19,17 +19,17 @@ jobs:
         run: |
           sudo apt update
           sudo apt install -y --no-install-recommends gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib srecord
-      - name: Build Feather RP2040 USB Host firmware
+      - name: Build Jarvis C0 Feather RP2040 USB Host firmware
         run: |
           mkdir build-feather
           cd build-feather
-          PICO_BOARD=feather_host cmake ..
-          make remapper
+          PICO_BOARD=feather_host cmake -DCMAKE_BUILD_TYPE=Release ..
+          make c0_passthrough
           cd ..
           mkdir artifacts
-          mv build-feather/remapper.uf2 artifacts/remapper_feather.uf2
+          mv build-feather/c0_passthrough.uf2 artifacts/firmware_c0_feather.uf2
         working-directory: ./firmware
       - uses: actions/upload-artifact@v7
         with:
-          name: remapper-feather
-          path: firmware/artifacts/remapper_feather.uf2
+          name: jarvis-c0-feather
+          path: firmware/artifacts/firmware_c0_feather.uf2

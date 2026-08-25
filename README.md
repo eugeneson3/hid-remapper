@@ -2,6 +2,20 @@
 
 _For user documentation please see the project's website at [remapper.org](https://www.remapper.org/)._
 
+## Jarvis C0 passthrough experiment
+
+This fork contains a separate `c0_passthrough` target for the Adafruit Feather
+RP2040 with USB Type A Host. It is not HID Remapper: it accepts the first
+directly connected HID boot-keyboard interface and forwards its unmodified
+8-byte boot report to the PC. C0 intentionally has no remapping, configuration,
+PC injection, hub support, generic report parser, queue, watchdog, or persistent
+state. Keyboard detach clears the current report as part of the minimum
+passthrough lifecycle.
+
+The `build-feather` workflow builds this target in Release mode and publishes
+`firmware_c0_feather.uf2`. The existing `remapper` target remains available and
+is the source of the separately preserved Jarvis stable rollback image.
+
 This is a configurable USB dongle that allows you to remap inputs from mice, keyboards and other devices. It works completely in hardware and requires no software running on the computer during normal use.
 
 It can do things like reassign buttons, change keyboard layouts, map mouse buttons to keyboard inputs, map keystrokes to mouse inputs, change mouse sensitivity (permanently or when a button is held), rotate mouse axes by arbitrary (non-90 degree) angles, drag-lock for mouse buttons, scroll by moving the mouse, and much more.
