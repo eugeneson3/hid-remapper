@@ -43,7 +43,7 @@ jobs:
       - name: Apply Jarvis minimal baseline overlay
         run: |
           converter=qmk_firmware/keyboards/converter/adafruit_rp2040_usbh
-          git -C "$converter" apply \
+          git -C "$converter" apply --unidiff-zero \
             "$GITHUB_WORKSPACE/firmware/qmk_passthrough/diagnostics.patch"
           cp firmware/qmk_passthrough/jarvis_diagnostics.c "$converter/"
           cp firmware/qmk_passthrough/jarvis_diagnostics.h "$converter/"
