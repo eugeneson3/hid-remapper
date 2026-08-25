@@ -59,7 +59,7 @@ jobs:
       - name: Build Jarvis QMK passthrough firmware
         run: |
           python3 -m pip install --disable-pip-version-check \
-            qmk==1.1.2 -r qmk_firmware/requirements.txt
+            qmk==1.1.2 milc==1.6.6 -r qmk_firmware/requirements.txt
           export PATH="$HOME/.local/bin:$PATH"
           make -C qmk_firmware converter/adafruit_rp2040_usbh:jarvis_baseline:uf2
           mkdir artifacts
