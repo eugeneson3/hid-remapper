@@ -54,6 +54,10 @@ jobs:
           grep -F '"vid": "0x046D"' "$converter/info.json"
           grep -F '"pid": "0xC52B"' "$converter/info.json"
           cp -R "$converter/keymaps/default" "$converter/keymaps/jarvis_baseline"
+          sed -i 's/^\[0\] = LAYOUT(/[0] = LAYOUT_fullsize_ansi(/' \
+            "$converter/keymaps/jarvis_baseline/keymap.c"
+          grep -F '[0] = LAYOUT_fullsize_ansi(' \
+            "$converter/keymaps/jarvis_baseline/keymap.c"
           cp firmware/qmk_passthrough/rules.mk "$converter/keymaps/jarvis_baseline/rules.mk"
       - name: Build Jarvis QMK passthrough firmware
         run: |
