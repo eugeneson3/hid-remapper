@@ -20,7 +20,6 @@ jobs:
             binutils-arm-none-eabi \
             gcc-arm-none-eabi \
             git \
-            jq \
             libnewlib-arm-none-eabi \
             libstdc++-arm-none-eabi-newlib \
             python3-pip
@@ -44,8 +43,17 @@ jobs:
       - name: Apply Jarvis minimal baseline overlay
         run: |
           converter=qmk_firmware/keyboards/converter/adafruit_rp2040_usbh
-          jq -f firmware/qmk_passthrough/info.jq "$converter/info.json" > "$converter/info.jarvis.json"
-          mv "$converter/info.jarvis.json" "$converter/info.json"
+          sed -i \
+            -e 's/"keyboard_name": "Rp2040 USB Host"/"keyboard_name": "Jarvis QMK Passthrough"/' \
+            -e 's/"vid": "0x239A"/"vid": "0x046D"/' \
+            -e 's/"pid": "0x0001"/"pid": "0xC52B"/' \
+            -e 's/"console": true/"console": false/' \
+            -e 's/"mousekey": true/"mousekey": false/' \
+            -e 's/"virtser": true/"virtser": false/' \
+            "$converter/info.json"
+          grep -F '"keyboard_name": "Jarvis QMK Passthrough"' "$converter/info.json"
+          grep -F '"vid": "0x046D"' "$converter/info.json"
+          grep -F '"pid": "0xC52B"' "$converter/info.json"
           cp -R "$converter/keymaps/default" "$converter/keymaps/jarvis_baseline"
           cp firmware/qmk_passthrough/rules.mk "$converter/keymaps/jarvis_baseline/rules.mk"
       - name: Build Jarvis QMK passthrough firmware
