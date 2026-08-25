@@ -47,7 +47,6 @@ jobs:
             -e 's/"keyboard_name": "Rp2040 USB Host"/"keyboard_name": "Jarvis QMK Passthrough"/' \
             -e 's/"vid": "0x239A"/"vid": "0x046D"/' \
             -e 's/"pid": "0x0001"/"pid": "0xC52B"/' \
-            -e 's/"console": true/"console": false/' \
             -e 's/"mousekey": true/"mousekey": false/' \
             -e 's/"virtser": true/"virtser": false/' \
             "$converter/info.json"
