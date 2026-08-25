@@ -2132,12 +2132,38 @@ void device_connected_callback(uint16_t interface, uint16_t vid, uint16_t pid, u
     }
 }
 
+static void clear_disconnected_keyboard_state(uint8_t dev_addr, uint8_t hub_port) {
+    uint32_t disconnected_interfaces = 0;
+    for (auto const& [interface, index] : interface_index) {
+        if ((interface >> 8) == dev_addr) {
+            disconnected_interfaces |= (uint32_t) 1 << index;
+        }
+    }
+
+    for (auto const& [key, state_ptr] : usage_state_ptr) {
+        uint32_t usage = key & 0xFFFFFFFF;
+        if ((usage >> 16) != 0x0007) {
+            continue;
+        }
+
+        uint8_t state_hub_port = (key >> 32) & 0xFF;
+        if (state_hub_port == 0) {
+            *state_ptr &= ~disconnected_interfaces;
+            *(state_ptr + PREV_STATE_OFFSET) &= ~disconnected_interfaces;
+        } else if (state_hub_port == hub_port) {
+            *state_ptr = 0;
+            *(state_ptr + PREV_STATE_OFFSET) = 0;
+        }
+    }
+}
+
 void device_disconnected_callback(uint8_t dev_addr) {
     if (our_descriptor->device_disconnected != nullptr) {
         our_descriptor->device_disconnected(dev_addr);
     }
-    clear_descriptor_data(dev_addr);
     uint8_t hub_port = hub_ports[dev_addr];
+    clear_disconnected_keyboard_state(dev_addr, hub_port);
+    clear_descriptor_data(dev_addr);
     if ((hub_port != 0) && (hub_port != HUB_PORT_NONE)) {
         active_ports_mask &= ~(1 << hub_port);
     }
