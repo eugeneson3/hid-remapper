@@ -17,7 +17,8 @@ and publishes the parsed state through QMK's keyboard report path.
 The Jarvis overlay is deliberately small:
 
 - keep USB VID/PID `046D:C52B`;
-- use product name `Jarvis QMK Passthrough`;
+- use product name `USB Receiver`, matching the product string normally used by
+  Logitech `046D:C52B` receivers;
 - copy the upstream `default` keymap as `jarvis_baseline`;
 - replace the unused console interface with a read-only Raw HID diagnostic
   interface, and disable virtual serial, mouse keys, tap dance, and combos;
