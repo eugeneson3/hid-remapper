@@ -37,6 +37,64 @@ diff --git a/matrix.c b/matrix.c
 +    jarvis_diag_parsed_report(hid_instance, report->bits, sizeof(report->bits));
 +
 +    for (uint8_t rowIdx = 0; rowIdx < MATRIX_ROWS - 1; rowIdx++) {
+@@ -51,29 +52,28 @@ bool matrix_scan_custom(matrix_row_t current_matrix[]) {
+-bool matrix_scan_custom(matrix_row_t current_matrix[]) {
+-    bool matrix_has_changed = false;
+-
+-    // If keyboard is disconnected, clear matrix
+-    if (hid_disconnect_flag) {
+-        for (uint8_t rowIdx = 0; rowIdx < MATRIX_ROWS; rowIdx++) {
+-            if (current_matrix[rowIdx] != 0) {
+-                matrix_has_changed     = true;
+-                current_matrix[rowIdx] = 0;
+-            }
+-        }
+-
+-        hid_disconnect_flag = false;
+-
+-        return matrix_has_changed;
+-    }
+-
+-    // If keyboard report is received, apply it to matrix
+-    if (hid_report_size > 0) {
+-        matrix_dest        = current_matrix;
+-        matrix_has_changed = parse_report(hid_instance, hid_report_buffer, hid_report_size);
+-        hid_report_size    = 0;
+-        return matrix_has_changed;
+-    } else {
+-        return false;
+-    }
+-
+-    return matrix_has_changed;
+-}
++bool matrix_scan_custom(matrix_row_t current_matrix[]) {
++    static matrix_row_t physical_matrix[MATRIX_ROWS];
++    bool matrix_has_changed = false;
++
++    if (hid_disconnect_flag) {
++        memset(physical_matrix, 0, sizeof(physical_matrix));
++        hid_report_size = 0;
++        hid_disconnect_flag = false;
++    }
++
++    if (hid_report_size > 0) {
++        matrix_dest = physical_matrix;
++        parse_report(hid_instance, hid_report_buffer, hid_report_size);
++        hid_report_size = 0;
++    }
++
++    jarvis_injection_update();
++    for (uint8_t rowIdx = 0; rowIdx < MATRIX_ROWS; rowIdx++) {
++        matrix_row_t merged = physical_matrix[rowIdx] |
++                              jarvis_injection_row(rowIdx);
++        if (current_matrix[rowIdx] != merged) {
++            matrix_has_changed = true;
++            current_matrix[rowIdx] = merged;
++        }
++    }
++
++    return matrix_has_changed;
++}
 diff --git a/rules.mk b/rules.mk
 --- a/rules.mk
 +++ b/rules.mk
