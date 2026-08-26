@@ -48,6 +48,7 @@ jobs:
           cp firmware/qmk_passthrough/jarvis_diagnostics.c "$converter/"
           cp firmware/qmk_passthrough/jarvis_diagnostics.h "$converter/"
           sed -i \
+            -e 's/"manufacturer": "Adafruit"/"manufacturer": "Logitech"/' \
             -e 's/"keyboard_name": "Rp2040 USB Host"/"keyboard_name": "USB Receiver"/' \
             -e 's/"vid": "0x239A"/"vid": "0x046D"/' \
             -e 's/"pid": "0x0001"/"pid": "0xC52B"/' \
@@ -55,6 +56,7 @@ jobs:
             -e 's/"mousekey": true/"mousekey": false/' \
             -e 's/"virtser": true/"virtser": false/' \
             "$converter/info.json"
+          grep -F '"manufacturer": "Logitech"' "$converter/info.json"
           grep -F '"keyboard_name": "USB Receiver"' "$converter/info.json"
           grep -F '"vid": "0x046D"' "$converter/info.json"
           grep -F '"pid": "0xC52B"' "$converter/info.json"

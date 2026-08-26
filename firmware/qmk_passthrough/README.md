@@ -17,6 +17,7 @@ and publishes the parsed state through QMK's keyboard report path.
 The Jarvis overlay is deliberately small:
 
 - keep USB VID/PID `046D:C52B`;
+- use manufacturer name `Logitech`;
 - use product name `USB Receiver`, matching the product string normally used by
   Logitech `046D:C52B` receivers;
 - copy the upstream `default` keymap as `jarvis_baseline`;
