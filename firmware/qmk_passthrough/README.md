@@ -31,6 +31,9 @@ The Jarvis overlay is deliberately small:
 - pin the Pico-PIO-USB RX bounds fix and backport the independently tested
   1200 us absolute receive deadline from upstream PR #210, so a missing EOP or
   continuously changing input cannot keep the USB host core in a receive loop;
+- schedule a full RP2040 watchdog reboot 250 ms after TinyUSB confirms that a
+  downstream HID interface was unmounted, taking the same clean initialization
+  path that the RESET button proved can recover;
 - keep NKRO and Consumer/System Control support.
 
 The diagnostic protocol uses Raw HID usage `FF60:0061`. It exposes attached HID
@@ -67,9 +70,12 @@ revision bounds the receive buffer and its NAK/STALL wait, but its ACK receive
 path can still wait forever when a disconnect removes the EOP in the middle of
 a packet. The backported absolute deadline exits both packet and handshake
 waits, refuses to ACK an incomplete packet, and lets TinyUSB continue to the
-unmount and subsequent enumeration paths. Disconnect recovery does not depend
-on synthesizing an all-keys-up report; clearing the QMK physical matrix remains
-best-effort behavior after TinyUSB delivers the unmount callback.
+unmount path. Hardware testing then showed that an idle disconnect/reconnect
+still did not resume input. Once the bounded RX path allows the unmount callback
+to run, the callback schedules a full watchdog reboot instead of relying on the
+old PIO USB/TinyUSB host state to enumerate again. Disconnect recovery does not
+depend on synthesizing an all-keys-up report; the PC-side key state during the
+brief upstream re-enumeration is explicitly best-effort.
 
 Do not promote this nightly to stable until it passes keyboard-attached
 power-on, ordinary and modifier input, Jarvis injection, physical/injected
