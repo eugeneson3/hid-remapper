@@ -28,6 +28,9 @@ The Jarvis overlay is deliberately small:
 - keep physical and injected keyboard states separate and publish their union;
 - clear every physical key and any pending USB-A report when the keyboard is
   disconnected;
+- schedule an RP2040 watchdog reboot 250 ms after a downstream HID disconnect,
+  because the pinned PIO USB host stack can clear the old key state yet fail to
+  enumerate the same keyboard after it is reconnected;
 - keep NKRO and Consumer/System Control support.
 
 The diagnostic protocol uses Raw HID usage `FF60:0061`. It exposes attached HID
@@ -57,6 +60,13 @@ loops. A descriptor may declare more array entries than TinyUSB delivered in
 the current callback; the parser must stop at the received length instead of
 reading bytes beyond the report buffer. Report layout, buffer sizes, key state,
 and output behavior are otherwise unchanged.
+
+The disconnect recovery change is intentionally a full watchdog reboot rather
+than a partial TinyUSB or PIO reset. Hardware reproduction showed that the
+disconnect callback released a held key, but reconnecting the keyboard did not
+resume reports until the Feather RESET button was pressed. A 250 ms delayed
+reboot preserves that already-working release behavior and automatically takes
+the same clean initialization path as the manual RESET recovery.
 
 Do not promote this nightly to stable until it passes keyboard-attached
 power-on, ordinary and modifier input, Jarvis injection, physical/injected
