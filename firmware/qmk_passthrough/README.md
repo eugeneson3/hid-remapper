@@ -1,4 +1,4 @@
-# Jarvis QMK passthrough nightly
+# Jarvis QMK passthrough nightly variants
 
 This build uses the structure and generic full-size keymap from
 `whyaaronbailey/adafruit_rp2040_usbh` rather than the retired Jarvis C0 target.
@@ -82,3 +82,24 @@ Do not promote this nightly to stable until it passes keyboard-attached
 power-on, ordinary and modifier input, Jarvis injection, physical/injected
 same-key merging, disconnect release, reconnect, and long-duration key-stuck
 tests on hardware.
+
+## nightly_merged recovery image
+
+build-feather-merged.yml produces a separate nightly_merged image. It keeps
+the upstream PR #210 1,200 us receive deadline, but returns a transport
+failure to TinyUSB instead of rebooting from every PIO transaction timeout.
+This avoids the immediate PIO watchdog experiment used by the existing nightly,
+which can prevent normal startup on some boards.
+
+The merged overlay has three recovery stages:
+
+- on a normal HID unmount it clears the physical state, turns GPIO18 USB-A VBUS
+  off, then schedules a complete watchdog reboot after 250 ms;
+- every boot begins with VBUS off for 100 ms, then waits 20 ms after enabling
+  it before starting TinyUSB, so the keyboard gets a clean power cycle;
+- if no unmount callback arrives, core 0 still reboots after two seconds
+  without the core-1 Host heartbeat.
+
+The design intentionally does not use a synthetic downstream all-keys-up as a
+recovery prerequisite. It is a distinct hardware-validation experiment and
+must remain separate from both firmware_nightly.uf2 and the stable image.

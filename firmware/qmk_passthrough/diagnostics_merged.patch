@@ -1,0 +1,144 @@
+diff --git a/config.h b/config.h
+--- a/config.h
++++ b/config.h
+@@ -6,3 +6,7 @@
+-#define NO_DEBUG
+-#define NO_PRINT
+-#define FORCE_NKRO
++#ifndef NO_DEBUG
++#define NO_DEBUG
++#endif
++#ifndef NO_PRINT
++#define NO_PRINT
++#endif
++#define FORCE_NKRO
+diff --git a/c1_usbh.c b/c1_usbh.c
+--- a/c1_usbh.c
++++ b/c1_usbh.c
+@@ -25,3 +25,7 @@ void c1_usbh(void) {
+     gpio_init(PIN_VBUS); // Use correct VBUS enable pin
+     gpio_set_dir(PIN_VBUS, GPIO_OUT);
++    // Reset the upstream device on every Feather boot. This also covers the
++    // core-0 heartbeat recovery path, where TinyUSB never got an unmount.
++    gpio_put(PIN_VBUS, 0);
++    busy_wait_us(100000);
+     gpio_put(PIN_VBUS, 1); // Enable VBUS to the USB-A host port
++    busy_wait_us(20000);   // Let the boost converter and device settle first.
+ 
+     tuh_init(1);
+diff --git a/matrix.c b/matrix.c
+--- a/matrix.c
++++ b/matrix.c
+@@ -11 +11,4 @@
+-#include "report_parser.h"
++#include "report_parser.h"
++#include "jarvis_diagnostics.h"
++#include "hardware/gpio.h"
++#include "hardware/watchdog.h"
+@@ -310 +313,3 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const* desc_re
+-    parse_report_descriptor((dev_addr * 16) + instance, desc_report, desc_len);
++    parse_report_descriptor((dev_addr * 16) + instance, desc_report, desc_len);
++    jarvis_diag_mount(dev_addr, instance, tuh_hid_interface_protocol(dev_addr, instance),
++                      desc_report, desc_len);
+@@ -330 +335,6 @@ void tuh_hid_umount_cb(uint8_t dev_addr, uint8_t instance) {
+-    dprintf("HID unmounted:%d:%d\n", dev_addr, instance);
++    dprintf("HID unmounted:%d:%d\n", dev_addr, instance);
++    jarvis_diag_unmount(dev_addr, instance);
++    // GPIO18 controls the Feather USB-A boost converter. Keep it off during
++    // the scheduled full reset so a partially powered keyboard starts clean.
++    gpio_put(18, 0);
++    watchdog_reboot(0, 0, 250);
+@@ -345 +353,2 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
+-    dprintf("Report received\n");
++    dprintf("Report received\n");
++    jarvis_diag_raw_report(dev_addr, instance, report, len);
+@@ -383 +393,3 @@ __attribute__((weak)) void keyboard_report_hook(keyboard_parse_result_t const* r
+-    for (uint8_t rowIdx = 0; rowIdx < MATRIX_ROWS - 1; rowIdx++) {
++    jarvis_diag_parsed_report(hid_instance, report->bits, sizeof(report->bits));
++
++    for (uint8_t rowIdx = 0; rowIdx < MATRIX_ROWS - 1; rowIdx++) {
+@@ -51,29 +52,28 @@ bool matrix_scan_custom(matrix_row_t current_matrix[]) {
+-bool matrix_scan_custom(matrix_row_t current_matrix[]) {
+-    bool matrix_has_changed = false;
+-
+-    // If keyboard is disconnected, clear matrix
+-    if (hid_disconnect_flag) {
+-        for (uint8_t rowIdx = 0; rowIdx < MATRIX_ROWS; rowIdx++) {
+-            if (current_matrix[rowIdx] != 0) {
+-                matrix_has_changed     = true;
+-                current_matrix[rowIdx] = 0;
+-            }
+-        }
+-
+-        hid_disconnect_flag = false;
+-
+-        return matrix_has_changed;
+-    }
+-
+-    // If keyboard report is received, apply it to matrix
+-    if (hid_report_size > 0) {
+-        matrix_dest        = current_matrix;
+-        matrix_has_changed = parse_report(hid_instance, hid_report_buffer, hid_report_size);
+-        hid_report_size    = 0;
+-        return matrix_has_changed;
+-    } else {
+-        return false;
+-    }
+-
+-    return matrix_has_changed;
+-}
++bool matrix_scan_custom(matrix_row_t current_matrix[]) {
++    static matrix_row_t physical_matrix[MATRIX_ROWS];
++    static uint32_t last_c1_heartbeat;
++    static uint32_t last_c1_progress_ms;
++    static bool c1_watch_started;
++    bool matrix_has_changed = false;
++    uint32_t heartbeat = c1_heartbeat;
++
++    if (!c1_ready || !c1_watch_started || heartbeat != last_c1_heartbeat) {
++        last_c1_heartbeat = heartbeat;
++        last_c1_progress_ms = timer_read32();
++        c1_watch_started = c1_ready;
++    } else if (timer_elapsed32(last_c1_progress_ms) > 2000) {
++        watchdog_reboot(0, 0, 0);
++    }
++
++    if (hid_disconnect_flag) {
++        memset(physical_matrix, 0, sizeof(physical_matrix));
++        hid_report_size = 0;
++        hid_disconnect_flag = false;
++    }
++
++    if (hid_report_size > 0) {
++        matrix_dest = physical_matrix;
++        parse_report(hid_instance, hid_report_buffer, hid_report_size);
++        hid_report_size = 0;
++    }
++
++    jarvis_injection_update();
++    for (uint8_t rowIdx = 0; rowIdx < MATRIX_ROWS; rowIdx++) {
++        matrix_row_t merged = physical_matrix[rowIdx] |
++                              jarvis_injection_row(rowIdx);
++        if (current_matrix[rowIdx] != merged) {
++            matrix_has_changed = true;
++            current_matrix[rowIdx] = merged;
++        }
++    }
++
++    return matrix_has_changed;
++}
+diff --git a/rules.mk b/rules.mk
+--- a/rules.mk
++++ b/rules.mk
+@@ -1 +1 @@
+-SRC += matrix.c c1_main.c c1_usbh.c tusb_os_custom.c
++SRC += matrix.c c1_main.c c1_usbh.c tusb_os_custom.c jarvis_diagnostics.c
+diff --git a/parser/report_parser.c b/parser/report_parser.c
+--- a/parser/report_parser.c
++++ b/parser/report_parser.c
+@@ -99 +99 @@ void keyboard_report_parser(hid_report_member_t const *member,
+-        for (int idx = 0; idx < member->global.report_count; idx++) {
++        for (int idx = 0; idx < member->global.report_count && len > 0; idx++) {
+@@ -113 +113 @@ void keyboard_report_parser(hid_report_member_t const *member,
+-        for (int idx = 0; idx < member->global.report_count; idx++) {
++        for (int idx = 0; idx < member->global.report_count && len > 0; idx++) {

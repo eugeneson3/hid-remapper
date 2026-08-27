@@ -1,0 +1,53 @@
+name: build-feather-merged
+on:
+  push:
+    paths:
+      - 'firmware/qmk_passthrough/**'
+      - '.github/workflows/build-feather-merged.yml'
+  workflow_dispatch:
+defaults:
+  run:
+    shell: bash --noprofile --norc -x -e -o pipefail {0}
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install QMK build dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y --no-install-recommends binutils-arm-none-eabi gcc-arm-none-eabi git libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib python3-pip
+      - name: Check out pinned QMK and converter sources
+        run: |
+          git clone --branch 0.24.0 --depth 1 --recurse-submodules --shallow-submodules https://github.com/qmk/qmk_firmware.git qmk_firmware
+          test "$(git -C qmk_firmware rev-parse HEAD)" = "4e369d405af6bba1adce6337b2e1b1ea1788566c"
+          git clone --depth 1 https://github.com/whyaaronbailey/adafruit_rp2040_usbh.git qmk_firmware/keyboards/converter/adafruit_rp2040_usbh
+          converter=qmk_firmware/keyboards/converter/adafruit_rp2040_usbh
+          git -C "$converter" fetch --depth 1 origin 8df86fe375d7055df618399f0d2f2f34dc2fc3a0
+          git -C "$converter" checkout 8df86fe375d7055df618399f0d2f2f34dc2fc3a0
+          git -C "$converter" submodule update --init --recursive --depth 1
+          pio_usb="$converter/lib/Pico-PIO-USB"
+          git -C "$pio_usb" fetch --depth 1 origin 447ea437fde9ba050281f3827ea4b41921833a90
+          git -C "$pio_usb" checkout 447ea437fde9ba050281f3827ea4b41921833a90
+          git -C "$pio_usb" apply --unidiff-zero "$GITHUB_WORKSPACE/firmware/qmk_passthrough/pico_pio_usb_merged.patch"
+      - name: Apply merged recovery overlay
+        run: |
+          converter=qmk_firmware/keyboards/converter/adafruit_rp2040_usbh
+          git -C "$converter" apply --unidiff-zero "$GITHUB_WORKSPACE/firmware/qmk_passthrough/diagnostics_merged.patch"
+          cp firmware/qmk_passthrough/jarvis_diagnostics.c "$converter/"
+          cp firmware/qmk_passthrough/jarvis_diagnostics.h "$converter/"
+          sed -i -e 's/"keyboard_name": "Rp2040 USB Host"/"keyboard_name": "Jarvis QMK Passthrough"/' -e 's/"vid": "0x239A"/"vid": "0x046D"/' -e 's/"pid": "0x0001"/"pid": "0xC52B"/' -e 's/"console": true/"console": false/' -e 's/"mousekey": true/"mousekey": false/' -e 's/"virtser": true/"virtser": false/' "$converter/info.json"
+          cp -R "$converter/keymaps/default" "$converter/keymaps/jarvis_baseline"
+          sed -i 's/^\[0\] = LAYOUT(/[0] = LAYOUT_fullsize_ansi(/' "$converter/keymaps/jarvis_baseline/keymap.c"
+          cp firmware/qmk_passthrough/rules.mk "$converter/keymaps/jarvis_baseline/rules.mk"
+      - name: Build merged recovery firmware
+        run: |
+          python3 -m pip install --disable-pip-version-check qmk==1.1.2 milc==1.6.6 -r qmk_firmware/requirements.txt
+          export PATH="$HOME/.local/bin:$PATH"
+          make -C qmk_firmware converter/adafruit_rp2040_usbh:jarvis_baseline:uf2
+          mkdir artifacts
+          cp qmk_firmware/.build/converter_adafruit_rp2040_usbh_jarvis_baseline.uf2 artifacts/firmware_qmk_passthrough_merged.uf2
+      - uses: actions/upload-artifact@v7
+        with:
+          name: jarvis-qmk-passthrough-merged
+          path: artifacts/firmware_qmk_passthrough_merged.uf2
