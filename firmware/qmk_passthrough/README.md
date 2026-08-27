@@ -21,13 +21,34 @@ The Jarvis overlay is deliberately small:
 - copy the upstream `default` keymap as `jarvis_baseline`;
 - replace the unused console interface with a read-only Raw HID diagnostic
   interface, and disable virtual serial, mouse keys, tap dance, and combos;
+- accept the existing Jarvis key-down, key-up, and clear commands over the same
+  Raw HID collection;
+- keep physical and injected keyboard states separate and publish their union;
+- clear every physical key and any pending USB-A report when the keyboard is
+  disconnected;
 - keep NKRO and Consumer/System Control support.
 
 The diagnostic protocol uses Raw HID usage `FF60:0061`. It exposes attached HID
 interface metadata, up to 1024 bytes of each report descriptor, a 32-entry ring
 of raw USB-A reports, and a separate 32-entry ring of parsed keyboard bitsets.
-Commands `D0` through `D4` are read-only and cannot inject keys or alter parser
-state. The host tool in Jarvis is `tools/diagnose_qmk_passthrough.py`.
+Commands `D0` through `D4` remain read-only and cannot alter parser state. The
+host tool in Jarvis is `tools/diagnose_qmk_passthrough.py`.
+
+Jarvis injection uses the same 32-byte command body as the stable firmware:
+
+- byte 0: config version `18`;
+- byte 1: command `26` (down), `27` (up), or `28` (clear injected keys);
+- bytes 2-5: little-endian full HID usage (`0007:xxxx` for keyboard keys);
+- bytes 6-7: little-endian key-down lease in milliseconds, default 500 and
+  clamped to 1000;
+- bytes 8-27: reserved zero bytes;
+- bytes 28-31: little-endian CRC32 over bytes 0-27.
+
+Injection commands intentionally have no Raw HID response. A key-down lease is
+refreshed by Jarvis while the key remains logically held, so a stopped or
+disconnected host process releases injected keys within one second. Physical
+and injected states are OR-merged; releasing one source does not release a key
+still held by the other source.
 
 The first capture-backed parser fix adds `len > 0` to both keyboard report
 loops. A descriptor may declare more array entries than TinyUSB delivered in
@@ -35,7 +56,7 @@ the current callback; the parser must stop at the received length instead of
 reading bytes beyond the report buffer. Report layout, buffer sizes, key state,
 and output behavior are otherwise unchanged.
 
-This baseline still has no Jarvis command-injection protocol. Do not promote it
-to stable until it passes keyboard-attached power-on, ordinary and modifier
-input, disconnect release, reconnect, and long-duration key-stuck tests on
-hardware.
+Do not promote this nightly to stable until it passes keyboard-attached
+power-on, ordinary and modifier input, Jarvis injection, physical/injected
+same-key merging, disconnect release, reconnect, and long-duration key-stuck
+tests on hardware.

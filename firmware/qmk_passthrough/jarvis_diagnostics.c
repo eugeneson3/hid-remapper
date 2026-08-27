@@ -26,6 +26,15 @@
 #define JARVIS_DIAG_CMD_RAW_EVENT 0xD3
 #define JARVIS_DIAG_CMD_PARSED_EVENT 0xD4
 
+#define JARVIS_CONFIG_VERSION 18
+#define JARVIS_CMD_INJECT_KEY_DOWN 26
+#define JARVIS_CMD_INJECT_KEY_UP 27
+#define JARVIS_CMD_INJECT_CLEAR_KEYS 28
+#define JARVIS_INJECT_USAGE_COUNT 256
+#define JARVIS_INJECT_ROW_COUNT (JARVIS_INJECT_USAGE_COUNT / 8)
+#define JARVIS_INJECT_DEFAULT_TTL_MS 500
+#define JARVIS_INJECT_MAX_TTL_MS 1000
+
 typedef struct {
     volatile uint32_t generation;
     volatile uint8_t mounted;
@@ -62,6 +71,8 @@ static jarvis_diag_parsed_event_t parsed_events[JARVIS_DIAG_EVENT_COUNT];
 static volatile uint32_t interface_generation;
 static volatile uint32_t raw_latest_sequence;
 static volatile uint32_t parsed_latest_sequence;
+static uint8_t injected_rows[JARVIS_INJECT_ROW_COUNT];
+static uint32_t injected_expiry[JARVIS_INJECT_USAGE_COUNT];
 
 static void memory_barrier(void) {
     __atomic_thread_fence(__ATOMIC_SEQ_CST);
@@ -86,6 +97,97 @@ static void write_u32(uint8_t* data, uint32_t value) {
     data[1] = (uint8_t)(value >> 8);
     data[2] = (uint8_t)(value >> 16);
     data[3] = (uint8_t)(value >> 24);
+}
+
+static uint32_t calculate_crc32(uint8_t const* data, uint8_t length) {
+    uint32_t crc = 0xFFFFFFFF;
+    for (uint8_t index = 0; index < length; index++) {
+        crc ^= data[index];
+        for (uint8_t bit = 0; bit < 8; bit++) {
+            uint32_t mask = -(crc & 1u);
+            crc = (crc >> 1) ^ (0xEDB88320u & mask);
+        }
+    }
+    return crc ^ 0xFFFFFFFF;
+}
+
+static bool timer_reached(uint32_t now, uint32_t deadline) {
+    return (int32_t)(now - deadline) >= 0;
+}
+
+static bool keyboard_usage(uint32_t full_usage, uint8_t* usage) {
+    if ((full_usage >> 16) != 0x0007 || (full_usage & 0xFFFF) == 0 ||
+        (full_usage & 0xFFFF) >= JARVIS_INJECT_USAGE_COUNT) {
+        return false;
+    }
+    *usage = (uint8_t)full_usage;
+    return true;
+}
+
+static void injection_key_down(uint8_t usage, uint16_t ttl_ms) {
+    if (ttl_ms == 0) {
+        ttl_ms = JARVIS_INJECT_DEFAULT_TTL_MS;
+    }
+    if (ttl_ms > JARVIS_INJECT_MAX_TTL_MS) {
+        ttl_ms = JARVIS_INJECT_MAX_TTL_MS;
+    }
+    injected_rows[usage / 8] |= (1u << (usage % 8));
+    injected_expiry[usage] = timer_read32() + ttl_ms;
+}
+
+static void injection_key_up(uint8_t usage) {
+    injected_rows[usage / 8] &= ~(1u << (usage % 8));
+    injected_expiry[usage] = 0;
+}
+
+void jarvis_injection_update(void) {
+    uint32_t now = timer_read32();
+    for (uint16_t usage = 1; usage < JARVIS_INJECT_USAGE_COUNT; usage++) {
+        uint8_t mask = 1u << (usage % 8);
+        if ((injected_rows[usage / 8] & mask) &&
+            timer_reached(now, injected_expiry[usage])) {
+            injection_key_up((uint8_t)usage);
+        }
+    }
+}
+
+uint8_t jarvis_injection_row(uint8_t row) {
+    return row < JARVIS_INJECT_ROW_COUNT ? injected_rows[row] : 0;
+}
+
+void jarvis_injection_clear(void) {
+    memset(injected_rows, 0, sizeof(injected_rows));
+    memset(injected_expiry, 0, sizeof(injected_expiry));
+}
+
+static bool handle_injection_packet(uint8_t const* data, uint8_t length) {
+    if (length != JARVIS_DIAG_PACKET_SIZE || data[0] != JARVIS_CONFIG_VERSION ||
+        data[1] < JARVIS_CMD_INJECT_KEY_DOWN ||
+        data[1] > JARVIS_CMD_INJECT_CLEAR_KEYS) {
+        return false;
+    }
+
+    if (calculate_crc32(data, JARVIS_DIAG_PACKET_SIZE - 4) !=
+        read_u32(&data[JARVIS_DIAG_PACKET_SIZE - 4])) {
+        return true;
+    }
+
+    if (data[1] == JARVIS_CMD_INJECT_CLEAR_KEYS) {
+        jarvis_injection_clear();
+        return true;
+    }
+
+    uint8_t usage = 0;
+    if (!keyboard_usage(read_u32(&data[2]), &usage)) {
+        return true;
+    }
+
+    if (data[1] == JARVIS_CMD_INJECT_KEY_DOWN) {
+        injection_key_down(usage, read_u16(&data[6]));
+    } else {
+        injection_key_up(usage);
+    }
+    return true;
 }
 
 static jarvis_diag_interface_t* find_interface(uint8_t dev_addr,
@@ -364,6 +466,9 @@ static void respond_parsed_event(uint8_t const* request, uint8_t* response) {
 
 void raw_hid_receive(uint8_t* data, uint8_t length) {
     if (length == 0 || data == NULL) {
+        return;
+    }
+    if (handle_injection_packet(data, length)) {
         return;
     }
 
