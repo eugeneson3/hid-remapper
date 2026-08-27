@@ -30,10 +30,11 @@ diff --git a/matrix.c b/matrix.c
 +static uint8_t           hid_instance;
 +static uint8_t           parsed_hid_instance;
 +static bool              keyboard_report_received;
-@@ -289,0 +294,5 @@ void tuh_mount_cb(uint8_t dev_addr) {
+@@ -289,0 +294,6 @@ void tuh_mount_cb(uint8_t dev_addr) {
 +    __atomic_store_n(&hid_report_size, 0, __ATOMIC_RELEASE);
 +    __atomic_store_n(&hid_connected, true, __ATOMIC_RELEASE);
-+    __atomic_add_fetch(&hid_connection_generation, 1, __ATOMIC_RELEASE);
++    uint32_t generation = __atomic_load_n(&hid_connection_generation, __ATOMIC_RELAXED);
++    __atomic_store_n(&hid_connection_generation, generation + 1, __ATOMIC_RELEASE);
 +
 +    // Ignore an initially held key until a fresh all-released report arrives.
 @@ -310 +311,3 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const* desc_re
@@ -41,7 +42,7 @@ diff --git a/matrix.c b/matrix.c
 +    parse_report_descriptor((dev_addr * 16) + instance, desc_report, desc_len);
 +    jarvis_diag_mount(dev_addr, instance, tuh_hid_interface_protocol(dev_addr, instance),
 +                      desc_report, desc_len);
-@@ -330,4 +338,7 @@ void tuh_hid_umount_cb(uint8_t dev_addr, uint8_t instance) {
+@@ -330,4 +339,8 @@ void tuh_hid_umount_cb(uint8_t dev_addr, uint8_t instance) {
 -    dprintf("HID unmounted:%d:%d\n", dev_addr, instance);
 +    dprintf("HID unmounted:%d:%d\n", dev_addr, instance);
 +    jarvis_diag_unmount(dev_addr, instance);
@@ -49,7 +50,8 @@ diff --git a/matrix.c b/matrix.c
 -    hid_disconnect_flag = true;
 +    __atomic_store_n(&hid_connected, false, __ATOMIC_RELEASE);
 +    __atomic_store_n(&hid_report_size, 0, __ATOMIC_RELEASE);
-+    __atomic_add_fetch(&hid_connection_generation, 1, __ATOMIC_RELEASE);
++    uint32_t generation = __atomic_load_n(&hid_connection_generation, __ATOMIC_RELAXED);
++    __atomic_store_n(&hid_connection_generation, generation + 1, __ATOMIC_RELEASE);
      kbd_addr            = 0;
 @@ -345 +349,2 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
 -    dprintf("Report received\n");
