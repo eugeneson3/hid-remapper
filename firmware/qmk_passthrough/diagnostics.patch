@@ -19,68 +19,25 @@ diff --git a/matrix.c b/matrix.c
 -#include "report_parser.h"
 +#include "report_parser.h"
 +#include "jarvis_diagnostics.h"
-@@ -33,3 +34,7 @@
--static volatile uint8_t hid_report_size;
--static uint8_t          hid_instance;
--static bool             hid_disconnect_flag;
-+static volatile uint8_t  hid_report_size;
-+static volatile uint32_t hid_connection_generation;
-+static uint32_t          hid_report_generation;
-+static volatile bool     hid_connected;
-+static uint8_t           hid_instance;
-+static uint8_t           parsed_hid_instance;
-+static bool              keyboard_report_received;
-@@ -289,0 +294,5 @@ void tuh_mount_cb(uint8_t dev_addr) {
-+    __atomic_store_n(&hid_report_size, 0, __ATOMIC_RELEASE);
-+    __atomic_store_n(&hid_connected, true, __ATOMIC_RELEASE);
-+    __atomic_add_fetch(&hid_connection_generation, 1, __ATOMIC_RELEASE);
-+
-+    // Ignore an initially held key until a fresh all-released report arrives.
 @@ -310 +311,3 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const* desc_re
 -    parse_report_descriptor((dev_addr * 16) + instance, desc_report, desc_len);
 +    parse_report_descriptor((dev_addr * 16) + instance, desc_report, desc_len);
 +    jarvis_diag_mount(dev_addr, instance, tuh_hid_interface_protocol(dev_addr, instance),
 +                      desc_report, desc_len);
-@@ -330,4 +338,7 @@ void tuh_hid_umount_cb(uint8_t dev_addr, uint8_t instance) {
+@@ -330 +333,2 @@ void tuh_hid_umount_cb(uint8_t dev_addr, uint8_t instance) {
 -    dprintf("HID unmounted:%d:%d\n", dev_addr, instance);
 +    dprintf("HID unmounted:%d:%d\n", dev_addr, instance);
 +    jarvis_diag_unmount(dev_addr, instance);
-     memset(pre_keyreport, 0, sizeof(pre_keyreport));
--    hid_disconnect_flag = true;
-+    __atomic_store_n(&hid_connected, false, __ATOMIC_RELEASE);
-+    __atomic_store_n(&hid_report_size, 0, __ATOMIC_RELEASE);
-+    __atomic_add_fetch(&hid_connection_generation, 1, __ATOMIC_RELEASE);
-     kbd_addr            = 0;
 @@ -345 +349,2 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
 -    dprintf("Report received\n");
 +    dprintf("Report received\n");
 +    jarvis_diag_raw_report(dev_addr, instance, report, len);
-@@ -359 +370 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
--        while (hid_report_size > 0 && cnt++ < 50000) {
-+        while (__atomic_load_n(&hid_report_size, __ATOMIC_ACQUIRE) > 0 && cnt++ < 50000) {
-@@ -362,5 +373,10 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
--        hid_instance = (dev_addr * 16) + instance;
--        memcpy(hid_report_buffer, report, len);
--        __compiler_memory_barrier();
--        // hid_report_size is used as trigger of report parser
--        hid_report_size = len;
-+        uint32_t generation = __atomic_load_n(&hid_connection_generation, __ATOMIC_ACQUIRE);
-+        if (__atomic_load_n(&hid_report_size, __ATOMIC_ACQUIRE) == 0 &&
-+            __atomic_load_n(&hid_connected, __ATOMIC_ACQUIRE) &&
-+            tuh_hid_mounted(dev_addr, instance)) {
-+            uint8_t report_size = len > sizeof(hid_report_buffer) ? sizeof(hid_report_buffer) : len;
-+            hid_instance = (dev_addr * 16) + instance;
-+            memcpy(hid_report_buffer, report, report_size);
-+            hid_report_generation = generation;
-+            __atomic_store_n(&hid_report_size, report_size, __ATOMIC_RELEASE);
-+        }
-@@ -383 +402,4 @@ __attribute__((weak)) void keyboard_report_hook(keyboard_parse_result_t const* r
+@@ -383 +388,3 @@ __attribute__((weak)) void keyboard_report_hook(keyboard_parse_result_t const* r
 -    for (uint8_t rowIdx = 0; rowIdx < MATRIX_ROWS - 1; rowIdx++) {
-+    jarvis_diag_parsed_report(parsed_hid_instance, report->bits, sizeof(report->bits));
-+    keyboard_report_received = true;
++    jarvis_diag_parsed_report(hid_instance, report->bits, sizeof(report->bits));
 +
 +    for (uint8_t rowIdx = 0; rowIdx < MATRIX_ROWS - 1; rowIdx++) {
-@@ -51,29 +55,63 @@ bool matrix_scan_custom(matrix_row_t current_matrix[]) {
+@@ -51,29 +52,28 @@ bool matrix_scan_custom(matrix_row_t current_matrix[]) {
 -bool matrix_scan_custom(matrix_row_t current_matrix[]) {
 -    bool matrix_has_changed = false;
 -
@@ -112,53 +69,18 @@ diff --git a/matrix.c b/matrix.c
 -}
 +bool matrix_scan_custom(matrix_row_t current_matrix[]) {
 +    static matrix_row_t physical_matrix[MATRIX_ROWS];
-+    static uint32_t observed_generation;
-+    static bool wait_for_all_keys_released;
 +    bool matrix_has_changed = false;
 +
-+    uint32_t generation = __atomic_load_n(&hid_connection_generation, __ATOMIC_ACQUIRE);
-+    bool connected = __atomic_load_n(&hid_connected, __ATOMIC_ACQUIRE);
-+    if (generation != observed_generation) {
++    if (hid_disconnect_flag) {
 +        memset(physical_matrix, 0, sizeof(physical_matrix));
-+        __atomic_store_n(&hid_report_size, 0, __ATOMIC_RELEASE);
-+        observed_generation = generation;
-+        wait_for_all_keys_released = connected;
++        hid_report_size = 0;
++        hid_disconnect_flag = false;
 +    }
 +
-+    uint8_t report_size = __atomic_load_n(&hid_report_size, __ATOMIC_ACQUIRE);
-+    if (connected && report_size > 0) {
-+        uint8_t report_buffer[sizeof(hid_report_buffer)];
-+        uint8_t report_instance = hid_instance;
-+        uint32_t report_generation = hid_report_generation;
-+        memcpy(report_buffer, hid_report_buffer, report_size);
-+
-+        if (report_generation == observed_generation) {
-+            keyboard_report_received = false;
-+            parsed_hid_instance = report_instance;
-+            matrix_dest = physical_matrix;
-+            parse_report(report_instance, report_buffer, report_size);
-+
-+            if (keyboard_report_received && wait_for_all_keys_released) {
-+                bool any_key_pressed = false;
-+                for (uint8_t rowIdx = 0; rowIdx < MATRIX_ROWS - 1; rowIdx++) {
-+                    any_key_pressed |= physical_matrix[rowIdx] != 0;
-+                }
-+                memset(physical_matrix, 0, sizeof(physical_matrix));
-+                if (!any_key_pressed) {
-+                    wait_for_all_keys_released = false;
-+                }
-+            }
-+        }
-+        __atomic_store_n(&hid_report_size, 0, __ATOMIC_RELEASE);
-+    }
-+
-+    generation = __atomic_load_n(&hid_connection_generation, __ATOMIC_ACQUIRE);
-+    connected = __atomic_load_n(&hid_connected, __ATOMIC_ACQUIRE);
-+    if (generation != observed_generation || !connected) {
-+        memset(physical_matrix, 0, sizeof(physical_matrix));
-+        __atomic_store_n(&hid_report_size, 0, __ATOMIC_RELEASE);
-+        observed_generation = generation;
-+        wait_for_all_keys_released = connected;
++    if (hid_report_size > 0) {
++        matrix_dest = physical_matrix;
++        parse_report(hid_instance, hid_report_buffer, hid_report_size);
++        hid_report_size = 0;
 +    }
 +
 +    jarvis_injection_update();
