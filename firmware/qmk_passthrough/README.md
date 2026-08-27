@@ -26,10 +26,16 @@ The Jarvis overlay is deliberately small:
 - accept the existing Jarvis key-down, key-up, and clear commands over the same
   Raw HID collection;
 - keep physical and injected keyboard states separate and publish their union;
-- clear every physical key and any pending USB-A report when the keyboard is
-  disconnected;
-- pin the Pico-PIO-USB RX timeout and bounds fix that prevents its host core from
-  hanging while a device is disconnected;
+- publish USB-A reports with a connection generation using acquire/release
+  atomics, discard reports from an older generation, and clear every physical
+  key when mount or unmount changes that generation;
+- after every mount, suppress physical keyboard input until the keyboard has
+  produced an all-keys-released report, so a key held through reconnection is
+  not replayed;
+- cap copied USB-A reports at the real 64-byte buffer size;
+- keep the pinned Pico-PIO-USB RX bounds fix and backport the independently
+  tested 1200 us absolute RX deadline from upstream PR #210, preventing a noisy
+  disconnect from keeping core 1 in the receive loop forever;
 - keep NKRO and Consumer/System Control support.
 
 The diagnostic protocol uses Raw HID usage `FF60:0061`. It exposes attached HID
@@ -60,12 +66,18 @@ the current callback; the parser must stop at the received length instead of
 reading bytes beyond the report buffer. Report layout, buffer sizes, key state,
 and output behavior are otherwise unchanged.
 
-Hardware reproduction showed that the disconnect callback released a held key,
-but reconnecting the keyboard did not resume reports until the Feather RESET
-button was pressed. The previous callback-level watchdog workaround did not
-help because Pico-PIO-USB can freeze in its RX loop before TinyUSB delivers the
-unmount callback. The pinned upstream fix bounds both that wait and the RX
-buffer, allowing TinyUSB to finish unmount and enumerate a reconnected keyboard.
+Hardware reproduction showed three nondeterministic results when unplugging a
+keyboard while a key was held: reconnect could remain dead, replay the held key,
+or fail to release it. Two faults overlapped. The pinned Pico-PIO-USB revision
+bounded the receive buffer but could still wait forever when no EOP arrived,
+and the converter shared its disconnect flag and report mailbox between RP2040
+cores without synchronization. The absolute RX deadline prevents the host-core
+wait, while connection generations make a disconnect clear non-lossy and reject
+old reports. The post-mount all-released gate prevents a held key from becoming
+a new press during enumeration.
+
+The earlier callback-level watchdog workaround is not present. It could not
+recover a host core that froze before TinyUSB delivered the unmount callback.
 
 Do not promote this nightly to stable until it passes keyboard-attached
 power-on, ordinary and modifier input, Jarvis injection, physical/injected
