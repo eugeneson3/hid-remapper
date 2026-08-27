@@ -32,8 +32,10 @@ The Jarvis overlay is deliberately small:
 - monitor the converter's existing core-1 heartbeat from QMK core 0 and reboot
   after two seconds without progress, covering a Host-core freeze that occurs
   before TinyUSB can deliver the unmount callback;
-- bound Pico-PIO-USB receive completion to 1,200 us so a missing EOP cannot
-  keep a packet receive loop running indefinitely or corrupt its buffer;
+- bound Pico-PIO-USB receive completion to 1,200 us and send every missing
+  receive or transmit completion through an immediate watchdog reboot, so a
+  cable removal that never reaches TinyUSB unmount cannot leave the Host alive
+  but permanently disconnected;
 - keep NKRO and Consumer/System Control support.
 
 The diagnostic protocol uses Raw HID usage `FF60:0061`. It exposes attached HID
@@ -70,8 +72,11 @@ the same for the physical matrix, but callback cleanup alone cannot recover a
 PIO Host core already blocked in a receive loop. The absolute RX deadline
 prevents the known loop, the unmount reset handles stale-but-running Host state,
 and the independent heartbeat monitor is the final path when no callback can
-run. Re-enumerating the upstream Feather also makes the PC discard any held HID
-state; synthesizing a downstream all-keys-up report is not a recovery condition.
+run. The PIO layer additionally reboots immediately when an IN/OUT transaction
+gets no completion at all; this is the cable-removal path that can otherwise
+return an error without an unmount or a stalled heartbeat. Re-enumerating the
+upstream Feather also makes the PC discard any held HID state; synthesizing a
+downstream all-keys-up report is not a recovery condition.
 
 Do not promote this nightly to stable until it passes keyboard-attached
 power-on, ordinary and modifier input, Jarvis injection, physical/injected
