@@ -1,0 +1,33 @@
+diff --git a/src/pio_usb.c b/src/pio_usb.c
+--- a/src/pio_usb.c
++++ b/src/pio_usb.c
+@@ -147,2 +147,3 @@ uint8_t __no_inline_not_in_flash_func(pio_usb_bus_wait_handshake)(pio_port_t* pp
+   int16_t t = 240;
+   int16_t idx = 0;
++  uint32_t rx_start = time_us_32();
+@@ -159,4 +160,5 @@ uint8_t __no_inline_not_in_flash_func(pio_usb_bus_wait_handshake)(pio_port_t* pp
+-  if (t > 0) {
+-    while ((pp->pio_usb_rx->irq & IRQ_RX_COMP_MASK) == 0) {
++  if (t > 0 && idx == 2) {
++    while ((pp->pio_usb_rx->irq & IRQ_RX_COMP_MASK) == 0 &&
++           (uint32_t)(time_us_32() - rx_start) <= 1200) {
+       continue;
+     }
+@@ -165,0 +168,4 @@ uint8_t __no_inline_not_in_flash_func(pio_usb_bus_wait_handshake)(pio_port_t* pp
++  if (idx != 2 || (pp->pio_usb_rx->irq & IRQ_RX_COMP_MASK) == 0) {
++    return 0;
++  }
++
+@@ -182,0 +190 @@ int __no_inline_not_in_flash_func(pio_usb_bus_receive_packet_and_handshake)(
++  uint32_t rx_start = time_us_32();
+@@ -196 +205,2 @@ int __no_inline_not_in_flash_func(pio_usb_bus_receive_packet_and_handshake)(
+-      while ((pp->pio_usb_rx->irq & IRQ_RX_COMP_MASK) == 0 && idx < rx_buf_len - 1) {
++      while ((pp->pio_usb_rx->irq & IRQ_RX_COMP_MASK) == 0 && idx < rx_buf_len - 1 &&
++             (uint32_t)(time_us_32() - rx_start) <= 1200) {
+@@ -210 +221,5 @@ int __no_inline_not_in_flash_func(pio_usb_bus_receive_packet_and_handshake)(
+-      if (idx >= 4 && crc_match) {
++      if ((pp->pio_usb_rx->irq & IRQ_RX_COMP_MASK) == 0) {
++        return -1;
++      }
++
++      if (idx >= 4 && crc_match) {

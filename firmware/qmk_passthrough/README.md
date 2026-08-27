@@ -28,8 +28,9 @@ The Jarvis overlay is deliberately small:
 - keep physical and injected keyboard states separate and publish their union;
 - clear every physical key and any pending USB-A report when the keyboard is
   disconnected;
-- pin the Pico-PIO-USB RX timeout and bounds fix that prevents its host core from
-  hanging while a device is disconnected;
+- pin the Pico-PIO-USB RX bounds fix and backport the independently tested
+  1200 us absolute receive deadline from upstream PR #210, so a missing EOP or
+  continuously changing input cannot keep the USB host core in a receive loop;
 - keep NKRO and Consumer/System Control support.
 
 The diagnostic protocol uses Raw HID usage `FF60:0061`. It exposes attached HID
@@ -60,12 +61,15 @@ the current callback; the parser must stop at the received length instead of
 reading bytes beyond the report buffer. Report layout, buffer sizes, key state,
 and output behavior are otherwise unchanged.
 
-Hardware reproduction showed that the disconnect callback released a held key,
-but reconnecting the keyboard did not resume reports until the Feather RESET
-button was pressed. The previous callback-level watchdog workaround did not
-help because Pico-PIO-USB can freeze in its RX loop before TinyUSB delivers the
-unmount callback. The pinned upstream fix bounds both that wait and the RX
-buffer, allowing TinyUSB to finish unmount and enumerate a reconnected keyboard.
+Hardware reproduction showed that reconnecting the keyboard did not resume
+reports until the Feather RESET button was pressed. The pinned Pico-PIO-USB
+revision bounds the receive buffer and its NAK/STALL wait, but its ACK receive
+path can still wait forever when a disconnect removes the EOP in the middle of
+a packet. The backported absolute deadline exits both packet and handshake
+waits, refuses to ACK an incomplete packet, and lets TinyUSB continue to the
+unmount and subsequent enumeration paths. Disconnect recovery does not depend
+on synthesizing an all-keys-up report; clearing the QMK physical matrix remains
+best-effort behavior after TinyUSB delivers the unmount callback.
 
 Do not promote this nightly to stable until it passes keyboard-attached
 power-on, ordinary and modifier input, Jarvis injection, physical/injected

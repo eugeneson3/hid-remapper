@@ -47,6 +47,8 @@ jobs:
           git -C "$pio_usb" checkout 447ea437fde9ba050281f3827ea4b41921833a90
           test "$(git -C "$pio_usb" rev-parse HEAD)" = \
             "447ea437fde9ba050281f3827ea4b41921833a90"
+          git -C "$pio_usb" apply --unidiff-zero \
+            "$GITHUB_WORKSPACE/firmware/qmk_passthrough/pico_pio_usb_disconnect.patch"
       - name: Apply Jarvis minimal baseline overlay
         run: |
           converter=qmk_firmware/keyboards/converter/adafruit_rp2040_usbh
