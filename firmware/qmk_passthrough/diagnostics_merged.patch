@@ -57,7 +57,7 @@ diff --git a/matrix.c b/matrix.c
 +    jarvis_diag_parsed_report(hid_instance, report->bits, sizeof(report->bits));
 +
 +    for (uint8_t rowIdx = 0; rowIdx < MATRIX_ROWS - 1; rowIdx++) {
-@@ -51,29 +52,42 @@ bool matrix_scan_custom(matrix_row_t current_matrix[]) {
+@@ -51,29 +52,40 @@ bool matrix_scan_custom(matrix_row_t current_matrix[]) {
 -bool matrix_scan_custom(matrix_row_t current_matrix[]) {
 -    bool matrix_has_changed = false;
 -
