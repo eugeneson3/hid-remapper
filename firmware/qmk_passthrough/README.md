@@ -7,7 +7,8 @@ Pinned inputs:
 
 - QMK: tag `0.24.0`, commit `4e369d405af6bba1adce6337b2e1b1ea1788566c`
 - Converter: commit `8df86fe375d7055df618399f0d2f2f34dc2fc3a0`
-- Converter Pico-PIO-USB submodule: `528616d809ad3a400dc0cf4dab0f790e62944244`
+- Pico-PIO-USB bounds fix: `447ea437fde9ba050281f3827ea4b41921833a90`,
+  plus the 1,200 us absolute receive deadline adapted from upstream PR #210
 - Converter TinyUSB submodule: `2179fb1bd93b71d755c4bf212aff7094f5e8337d`
 
 The converter keeps USB host processing on RP2040 core 1, generates the 1 ms
@@ -26,6 +27,13 @@ The Jarvis overlay is deliberately small:
 - keep physical and injected keyboard states separate and publish their union;
 - clear every physical key and any pending USB-A report when the keyboard is
   disconnected;
+- reboot the whole RP2040 100 ms after a normal HID unmount so PIO and TinyUSB
+  start from a clean state;
+- monitor the converter's existing core-1 heartbeat from QMK core 0 and reboot
+  after two seconds without progress, covering a Host-core freeze that occurs
+  before TinyUSB can deliver the unmount callback;
+- bound Pico-PIO-USB receive completion to 1,200 us so a missing EOP cannot
+  keep a packet receive loop running indefinitely or corrupt its buffer;
 - keep NKRO and Consumer/System Control support.
 
 The diagnostic protocol uses Raw HID usage `FF60:0061`. It exposes attached HID
@@ -55,6 +63,15 @@ loops. A descriptor may declare more array entries than TinyUSB delivered in
 the current callback; the parser must stop at the received length instead of
 reading bytes beyond the report buffer. Report layout, buffer sizes, key state,
 and output behavior are otherwise unchanged.
+
+Disconnect recovery deliberately uses a full watchdog reboot. Keyboard
+Quantizer clears its parser state in a disconnect callback, and this build does
+the same for the physical matrix, but callback cleanup alone cannot recover a
+PIO Host core already blocked in a receive loop. The absolute RX deadline
+prevents the known loop, the unmount reset handles stale-but-running Host state,
+and the independent heartbeat monitor is the final path when no callback can
+run. Re-enumerating the upstream Feather also makes the PC discard any held HID
+state; synthesizing a downstream all-keys-up report is not a recovery condition.
 
 Do not promote this nightly to stable until it passes keyboard-attached
 power-on, ordinary and modifier input, Jarvis injection, physical/injected

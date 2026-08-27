@@ -15,19 +15,21 @@ diff --git a/config.h b/config.h
 diff --git a/matrix.c b/matrix.c
 --- a/matrix.c
 +++ b/matrix.c
-@@ -11 +11,2 @@
+@@ -11 +11,3 @@
 -#include "report_parser.h"
 +#include "report_parser.h"
 +#include "jarvis_diagnostics.h"
++#include "hardware/watchdog.h"
 @@ -310 +311,3 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const* desc_re
 -    parse_report_descriptor((dev_addr * 16) + instance, desc_report, desc_len);
 +    parse_report_descriptor((dev_addr * 16) + instance, desc_report, desc_len);
 +    jarvis_diag_mount(dev_addr, instance, tuh_hid_interface_protocol(dev_addr, instance),
 +                      desc_report, desc_len);
-@@ -330 +333,2 @@ void tuh_hid_umount_cb(uint8_t dev_addr, uint8_t instance) {
+@@ -330 +335,3 @@ void tuh_hid_umount_cb(uint8_t dev_addr, uint8_t instance) {
 -    dprintf("HID unmounted:%d:%d\n", dev_addr, instance);
 +    dprintf("HID unmounted:%d:%d\n", dev_addr, instance);
 +    jarvis_diag_unmount(dev_addr, instance);
++    watchdog_reboot(0, 0, 100);
 @@ -345 +349,2 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
 -    dprintf("Report received\n");
 +    dprintf("Report received\n");
@@ -69,7 +71,21 @@ diff --git a/matrix.c b/matrix.c
 -}
 +bool matrix_scan_custom(matrix_row_t current_matrix[]) {
 +    static matrix_row_t physical_matrix[MATRIX_ROWS];
++    static uint32_t last_c1_heartbeat;
++    static uint32_t last_c1_progress_ms;
++    static bool c1_watch_started;
 +    bool matrix_has_changed = false;
++    uint32_t heartbeat = c1_heartbeat;
++
++    if (!c1_ready || !c1_watch_started || heartbeat != last_c1_heartbeat) {
++        last_c1_heartbeat = heartbeat;
++        last_c1_progress_ms = timer_read32();
++        c1_watch_started = c1_ready;
++    } else if (timer_elapsed32(last_c1_progress_ms) > 2000) {
++        // The USB Host core can freeze before TinyUSB emits an unmount callback.
++        // A full reset is the only proven way to reinitialize PIO and TinyUSB.
++        watchdog_reboot(0, 0, 0);
++    }
 +
 +    if (hid_disconnect_flag) {
 +        memset(physical_matrix, 0, sizeof(physical_matrix));
