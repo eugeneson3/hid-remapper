@@ -7,7 +7,7 @@ Pinned inputs:
 
 - QMK: tag `0.24.0`, commit `4e369d405af6bba1adce6337b2e1b1ea1788566c`
 - Converter: commit `8df86fe375d7055df618399f0d2f2f34dc2fc3a0`
-- Converter Pico-PIO-USB submodule: `528616d809ad3a400dc0cf4dab0f790e62944244`
+- Converter Pico-PIO-USB submodule: `447ea437fde9ba050281f3827ea4b41921833a90`
 - Converter TinyUSB submodule: `2179fb1bd93b71d755c4bf212aff7094f5e8337d`
 
 The converter keeps USB host processing on RP2040 core 1, generates the 1 ms
@@ -28,9 +28,8 @@ The Jarvis overlay is deliberately small:
 - keep physical and injected keyboard states separate and publish their union;
 - clear every physical key and any pending USB-A report when the keyboard is
   disconnected;
-- schedule an RP2040 watchdog reboot 250 ms after a downstream HID disconnect,
-  because the pinned PIO USB host stack can clear the old key state yet fail to
-  enumerate the same keyboard after it is reconnected;
+- pin the Pico-PIO-USB RX timeout and bounds fix that prevents its host core from
+  hanging while a device is disconnected;
 - keep NKRO and Consumer/System Control support.
 
 The diagnostic protocol uses Raw HID usage `FF60:0061`. It exposes attached HID
@@ -61,12 +60,12 @@ the current callback; the parser must stop at the received length instead of
 reading bytes beyond the report buffer. Report layout, buffer sizes, key state,
 and output behavior are otherwise unchanged.
 
-The disconnect recovery change is intentionally a full watchdog reboot rather
-than a partial TinyUSB or PIO reset. Hardware reproduction showed that the
-disconnect callback released a held key, but reconnecting the keyboard did not
-resume reports until the Feather RESET button was pressed. A 250 ms delayed
-reboot preserves that already-working release behavior and automatically takes
-the same clean initialization path as the manual RESET recovery.
+Hardware reproduction showed that the disconnect callback released a held key,
+but reconnecting the keyboard did not resume reports until the Feather RESET
+button was pressed. The previous callback-level watchdog workaround did not
+help because Pico-PIO-USB can freeze in its RX loop before TinyUSB delivers the
+unmount callback. The pinned upstream fix bounds both that wait and the RX
+buffer, allowing TinyUSB to finish unmount and enumerate a reconnected keyboard.
 
 Do not promote this nightly to stable until it passes keyboard-attached
 power-on, ordinary and modifier input, Jarvis injection, physical/injected

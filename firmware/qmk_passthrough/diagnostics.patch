@@ -15,21 +15,19 @@ diff --git a/config.h b/config.h
 diff --git a/matrix.c b/matrix.c
 --- a/matrix.c
 +++ b/matrix.c
-@@ -11 +11,3 @@
+@@ -11 +11,2 @@
 -#include "report_parser.h"
 +#include "report_parser.h"
 +#include "jarvis_diagnostics.h"
-+#include "hardware/watchdog.h"
 @@ -310 +311,3 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const* desc_re
 -    parse_report_descriptor((dev_addr * 16) + instance, desc_report, desc_len);
 +    parse_report_descriptor((dev_addr * 16) + instance, desc_report, desc_len);
 +    jarvis_diag_mount(dev_addr, instance, tuh_hid_interface_protocol(dev_addr, instance),
 +                      desc_report, desc_len);
-@@ -330 +334,3 @@ void tuh_hid_umount_cb(uint8_t dev_addr, uint8_t instance) {
+@@ -330 +333,2 @@ void tuh_hid_umount_cb(uint8_t dev_addr, uint8_t instance) {
 -    dprintf("HID unmounted:%d:%d\n", dev_addr, instance);
 +    dprintf("HID unmounted:%d:%d\n", dev_addr, instance);
 +    jarvis_diag_unmount(dev_addr, instance);
-+    watchdog_reboot(0, 0, 250);
 @@ -345 +349,2 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
 -    dprintf("Report received\n");
 +    dprintf("Report received\n");

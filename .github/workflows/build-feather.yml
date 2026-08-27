@@ -40,6 +40,13 @@ jobs:
             --init --recursive --depth 1
           test "$(git -C qmk_firmware/keyboards/converter/adafruit_rp2040_usbh rev-parse HEAD)" = \
             "8df86fe375d7055df618399f0d2f2f34dc2fc3a0"
+
+          pio_usb=qmk_firmware/keyboards/converter/adafruit_rp2040_usbh/Pico-PIO-USB
+          git -C "$pio_usb" fetch --depth 1 origin \
+            447ea437fde9ba050281f3827ea4b41921833a90
+          git -C "$pio_usb" checkout 447ea437fde9ba050281f3827ea4b41921833a90
+          test "$(git -C "$pio_usb" rev-parse HEAD)" = \
+            "447ea437fde9ba050281f3827ea4b41921833a90"
       - name: Apply Jarvis minimal baseline overlay
         run: |
           converter=qmk_firmware/keyboards/converter/adafruit_rp2040_usbh
