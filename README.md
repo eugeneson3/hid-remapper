@@ -16,8 +16,10 @@ onboard Feather NeoPixel uses GPIO21 with GPIO20 power and breathes green using
 an ease-in/ease-out curve. Pico-PIO-USB is initialized first so it owns
 PIO0/SM0; the NeoPixel then claims a remaining state machine. If no PIO resource
 is available, only the status LED is disabled and USB pass-through remains
-available. QMK, C0 and watchdog recovery experiments are not part of this
-source baseline.
+available. Array monitor reports compare only usages that are currently or
+previously pressed; they never scan the descriptor's entire usage range in the
+1 ms USB report path. QMK, C0 and watchdog recovery experiments are not part of
+this source baseline.
 
 This is a configurable USB dongle that allows you to remap inputs from mice, keyboards and other devices. It works completely in hardware and requires no software running on the computer during normal use.
 
