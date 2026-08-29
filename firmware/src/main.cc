@@ -23,6 +23,7 @@
 #include "descriptor_parser.h"
 #include "globals.h"
 #include "i2c.h"
+#include "jarvis_status.h"
 #include "mcp4651.h"
 #include "our_descriptor.h"
 #include "platform.h"
@@ -76,10 +77,10 @@ bool do_send_report(uint8_t interface, const uint8_t* report_with_id, uint8_t le
         (our_descriptor->should_cause_wakeup != nullptr) &&
         our_descriptor->should_cause_wakeup(report_with_id[0], report_with_id + 1, len - 1)) {
         tud_remote_wakeup();
-        return false;
     } else {
-        return tud_hid_n_report(interface, report_with_id[0], report_with_id + 1, len - 1);
+        tud_hid_n_report(interface, report_with_id[0], report_with_id + 1, len - 1);
     }
+    return true;  // XXX?
 }
 
 void gpio_pins_init() {
@@ -252,6 +253,7 @@ int main() {
     parse_our_descriptor();
     set_mapping_from_config();
     board_init();
+    jarvis_status_init();
     extra_init();
     tusb_init();
     stdio_init_all();
@@ -319,6 +321,8 @@ int main() {
         }
 
         print_stats_maybe();
+
+        jarvis_status_task(time_us_64());
 
         activity_led_off_maybe();
     }

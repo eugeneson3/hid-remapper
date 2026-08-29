@@ -13,6 +13,7 @@
 #include "crc.h"
 #include "descriptor_parser.h"
 #include "globals.h"
+#include "jarvis_status.h"
 #include "our_descriptor.h"
 #include "platform.h"
 #include "remapper.h"
@@ -1490,10 +1491,7 @@ bool send_report(send_report_t do_send_report) {
         sent = do_send_report(0, outgoing_reports[or_head], report_sizes[report_id] + 1);
     }
 
-    if (!sent) {
-        return false;
-    }
-
+    // XXX even if not sent?
     or_head = (or_head + 1) % OR_BUFSIZE;
     or_items--;
 
@@ -1644,17 +1642,28 @@ inline void monitor_read_input(const uint8_t* report, int len, uint32_t source_u
 }
 
 inline void monitor_read_input_range(const uint8_t* report, int len, uint32_t source_usage, const usage_def_t& their_usage, uint8_t interface_idx, uint8_t hub_port) {
-    // is_array and !is_relative is implied
-    for (unsigned int i = 0; i < their_usage.count; i++) {
-        uint32_t bits = get_bits(report, len, their_usage.bitpos + i * their_usage.size, their_usage.size);
-        // XXX consider negative indexes
-        if ((bits >= their_usage.logical_minimum) &&
-            (bits <= their_usage.logical_minimum + their_usage.usage_maximum - source_usage)) {
-            uint32_t actual_usage = source_usage + bits - their_usage.logical_minimum;
-            // for array range inputs, "key-up" events (value=0) don't show up in the monitor
-            if (monitor_enabled && ((actual_usage & 0xFFFF) != 0)) {
-                monitor_usage(actual_usage, 1, hub_port);
+    // Array reports only list usages that are currently down. Compare every
+    // usage in the range with the previous interface bit so releases are
+    // reported once instead of emitting repeated key-down events forever.
+    for (uint32_t actual_usage = source_usage; actual_usage <= their_usage.usage_maximum; actual_usage++) {
+        bool down = false;
+        for (unsigned int i = 0; i < their_usage.count; i++) {
+            uint32_t bits = get_bits(report, len, their_usage.bitpos + i * their_usage.size, their_usage.size);
+            if ((bits >= their_usage.logical_minimum) &&
+                (source_usage + bits - their_usage.logical_minimum == actual_usage)) {
+                down = true;
+                break;
             }
+        }
+
+        bool was_down = 1 & (monitor_input_state[actual_usage] >> interface_idx);
+        if ((down != was_down) && ((actual_usage & 0xFFFF) != 0)) {
+            monitor_usage(actual_usage, down ? 1 : 0, hub_port);
+        }
+        if (down) {
+            monitor_input_state[actual_usage] |= 1 << interface_idx;
+        } else {
+            monitor_input_state[actual_usage] &= ~(1 << interface_idx);
         }
     }
 }
@@ -1731,6 +1740,13 @@ void do_handle_received_report(const uint8_t* report, int len, uint16_t interfac
                 monitor_read_input_range(report, len, their_usage, their_usage_def, interface_idx, hub_port);
             }
         }
+        jarvis_update_shortcuts(
+            monitor_input_state[0x0007002B] != 0,
+            monitor_input_state[0x00070048] != 0,
+            monitor_input_state[0x00070052] != 0,
+            monitor_input_state[0x00070051] != 0,
+            monitor_input_state[0x00070050] != 0,
+            monitor_input_state[0x0007004F] != 0);
     }
 
     my_mutex_exit(MutexId::THEIR_USAGES);
@@ -2119,10 +2135,11 @@ void inject_clear_keys() {
 }
 
 void set_monitor_enabled(bool enabled) {
-    if (monitor_enabled != enabled) {
-        monitor_input_state.clear();
-        monitor_enabled = enabled;
-    }
+    monitor_input_state.clear();
+    monitor_usages_queued = 0;
+    memset(&(monitor_report[monitor_report_idx].items), 0, sizeof(monitor_report[0].items));
+    jarvis_reset_shortcuts();
+    monitor_enabled = enabled;
 }
 
 void device_connected_callback(uint16_t interface, uint16_t vid, uint16_t pid, uint8_t hub_port) {
@@ -2132,38 +2149,12 @@ void device_connected_callback(uint16_t interface, uint16_t vid, uint16_t pid, u
     }
 }
 
-static void clear_disconnected_keyboard_state(uint8_t dev_addr, uint8_t hub_port) {
-    uint32_t disconnected_interfaces = 0;
-    for (auto const& [interface, index] : interface_index) {
-        if ((interface >> 8) == dev_addr) {
-            disconnected_interfaces |= (uint32_t) 1 << index;
-        }
-    }
-
-    for (auto const& [key, state_ptr] : usage_state_ptr) {
-        uint32_t usage = key & 0xFFFFFFFF;
-        if ((usage >> 16) != 0x0007) {
-            continue;
-        }
-
-        uint8_t state_hub_port = (key >> 32) & 0xFF;
-        if (state_hub_port == 0) {
-            *state_ptr &= ~disconnected_interfaces;
-            *(state_ptr + PREV_STATE_OFFSET) &= ~disconnected_interfaces;
-        } else if (state_hub_port == hub_port) {
-            *state_ptr = 0;
-            *(state_ptr + PREV_STATE_OFFSET) = 0;
-        }
-    }
-}
-
 void device_disconnected_callback(uint8_t dev_addr) {
     if (our_descriptor->device_disconnected != nullptr) {
         our_descriptor->device_disconnected(dev_addr);
     }
-    uint8_t hub_port = hub_ports[dev_addr];
-    clear_disconnected_keyboard_state(dev_addr, hub_port);
     clear_descriptor_data(dev_addr);
+    uint8_t hub_port = hub_ports[dev_addr];
     if ((hub_port != 0) && (hub_port != HUB_PORT_NONE)) {
         active_ports_mask &= ~(1 << hub_port);
     }

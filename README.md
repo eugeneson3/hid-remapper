@@ -2,19 +2,19 @@
 
 _For user documentation please see the project's website at [remapper.org](https://www.remapper.org/)._
 
-## Jarvis QMK passthrough experiment
+## Jarvis Feather nightly
 
-The experimental Feather RP2040 USB Host image is built from QMK 0.24.0 and
-whyaaronbailey's `adafruit_rp2040_usbh` converter at pinned commits. It uses the
-converter's core-1 Pico-PIO-USB host path and HID report-descriptor parser
-instead of the retired C0 boot-keyboard-only target. The `jarvis_baseline`
-overlay only preserves Jarvis's USB VID/PID and disables the unused QMK console,
-virtual serial, mouse keys, tap dance, and combos. It does not implement Jarvis
-command injection yet.
+Jarvis uses the Pico SDK `remapper` target for `PICO_BOARD=feather_host`, based
+on stable source commit `cb0697468050e67e184e0df644d995f9aab2923e`. The
+nightly keeps physical keyboard pass-through and feature-report injection, and
+adds firmware monitor events for physical key down/up transitions.
 
-Build pins and overlay details are recorded in `firmware/qmk_passthrough`. The
-existing `remapper` target remains the source of the separately preserved
-Jarvis stable rollback image.
+The monitor emits vendor usages for `Pause` or `Tab+Up` (auto hunting),
+`Tab+Down` (rune capture), and reserved `Tab+Left`/`Tab+Right` shortcuts. Feature
+command 29 carries the Jarvis auto-hunting state with a TTL. While active, the
+onboard Feather NeoPixel uses GPIO21 with GPIO20 power and breathes green using
+an ease-in/ease-out curve. QMK, C0 and watchdog recovery experiments are not
+part of this source baseline.
 
 This is a configurable USB dongle that allows you to remap inputs from mice, keyboards and other devices. It works completely in hardware and requires no software running on the computer during normal use.
 

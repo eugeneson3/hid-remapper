@@ -27,6 +27,7 @@ if((PICO_BOARD STREQUAL "pico") OR (PICO_BOARD STREQUAL "pico2"))
 add_compile_definitions(GPIO_VALID_PINS_BASE=0b00011100011111111111111111111111)
 endif()
 
+
 add_executable(remapper
     src/main.cc
     src/remapper.cc
@@ -42,6 +43,7 @@ add_executable(remapper
     src/out_report.cc
     src/tick.cc
     src/activity_led.cc
+    src/jarvis_status.cc
     src/ps_auth.cc
     src/app_driver.cc
     src/xbox.cc
