@@ -23,7 +23,6 @@
 #include "descriptor_parser.h"
 #include "globals.h"
 #include "i2c.h"
-#include "jarvis_status.h"
 #include "mcp4651.h"
 #include "our_descriptor.h"
 #include "platform.h"
@@ -255,9 +254,6 @@ int main() {
     board_init();
     extra_init();
     tusb_init();
-    // Pico-PIO-USB claims PIO0/SM0 during tusb_init().  The status NeoPixel
-    // must claim a remaining state machine afterwards or USB Host panics.
-    jarvis_status_init();
     stdio_init_all();
 
     tud_sof_isr_set(sof_handler);
@@ -323,8 +319,6 @@ int main() {
         }
 
         print_stats_maybe();
-
-        jarvis_status_task(time_us_64());
 
         activity_led_off_maybe();
     }

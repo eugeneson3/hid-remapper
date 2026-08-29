@@ -6,7 +6,6 @@
 #include "crc.h"
 #include "globals.h"
 #include "interval_override.h"
-#include "jarvis_status.h"
 #include "our_descriptor.h"
 #include "platform.h"
 #include "remapper.h"
@@ -1132,11 +1131,6 @@ void handle_set_report1(uint8_t report_id, uint8_t const* buffer, uint16_t bufsi
                     inject_clear_keys();
                     set_tick_pending();
                     break;
-                case ConfigCommand::SET_JARVIS_AUTO_HUNTING: {
-                    jarvis_auto_hunting_t* status = (jarvis_auto_hunting_t*) config_buffer->data;
-                    jarvis_set_auto_hunting(status->enabled != 0, status->ttl_ms);
-                    break;
-                }
                 default:
                     last_config_command = ConfigCommand::INVALID_COMMAND;
                     break;

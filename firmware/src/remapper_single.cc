@@ -35,12 +35,6 @@ uint32_t get_gpio_valid_pins_mask() {
 #ifdef PICO_DEFAULT_UART_RX_PIN
                                       (1 << PICO_DEFAULT_UART_RX_PIN) |
 #endif
-#ifdef PICO_DEFAULT_WS2812_PIN
-                                      (1 << PICO_DEFAULT_WS2812_PIN) |
-#endif
-#ifdef PICO_DEFAULT_WS2812_POWER_PIN
-                                      (1 << PICO_DEFAULT_WS2812_POWER_PIN) |
-#endif
                                       (1 << PICO_DEFAULT_PIO_USB_DP_PIN) |
                                       (1 << (PICO_DEFAULT_PIO_USB_DP_PIN + 1)));
 }

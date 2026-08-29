@@ -43,7 +43,6 @@ add_executable(remapper
     src/out_report.cc
     src/tick.cc
     src/activity_led.cc
-    src/jarvis_status.cc
     src/ps_auth.cc
     src/app_driver.cc
     src/xbox.cc

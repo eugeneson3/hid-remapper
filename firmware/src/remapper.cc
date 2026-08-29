@@ -13,7 +13,6 @@
 #include "crc.h"
 #include "descriptor_parser.h"
 #include "globals.h"
-#include "jarvis_status.h"
 #include "our_descriptor.h"
 #include "platform.h"
 #include "remapper.h"
@@ -111,14 +110,25 @@ uint32_t processing_time;
 bool expression_valid[NEXPRESSIONS] = { false };
 
 std::unordered_map<uint32_t, int32_t> monitor_input_state;
-// Array inputs (ordinary keyboard 6KRO reports, consumer arrays, etc.) keep
-// their per-interface down state separately.  Only usages that have actually
-// appeared are stored, so a descriptor with a very large usage range cannot
-// stall USB Host processing.
-std::unordered_map<uint32_t, uint32_t> monitor_array_input_state;
 uint8_t monitor_usages_queued = 0;
 monitor_report_t monitor_report[2] = { { .report_id = REPORT_ID_MONITOR }, { .report_id = REPORT_ID_MONITOR } };
 uint8_t monitor_report_idx = 0;
+
+// Jarvis shortcut usages deliberately use 0xFFFA.  Stable already reserves
+// 0xFFF9 for DPAD usages, so reusing 0xFFF9 would make ordinary DPAD reports
+// look like Jarvis commands.
+const uint32_t JARVIS_SHORTCUT_USAGE_PAGE = 0xFFFA0000;
+const uint32_t JARVIS_SHORTCUT_USAGES[] = {
+    0x0007002B,  // Tab
+    0x00070048,  // Pause
+    0x00070052,  // Up
+    0x00070051,  // Down
+    0x00070050,  // Left
+    0x0007004F,  // Right
+};
+uint32_t jarvis_shortcut_key_state[6] = { 0 };
+bool jarvis_pause_latched = false;
+bool jarvis_arrow_latched[4] = { false, false, false, false };
 
 #define NREGISTERS 32
 int32_t registers[NREGISTERS] = { 0 };
@@ -1530,6 +1540,88 @@ void monitor_usage(uint32_t usage, int32_t value, uint8_t hub_port) {
     };
 }
 
+void reset_jarvis_shortcuts() {
+    memset(jarvis_shortcut_key_state, 0, sizeof(jarvis_shortcut_key_state));
+    jarvis_pause_latched = false;
+    memset(jarvis_arrow_latched, 0, sizeof(jarvis_arrow_latched));
+}
+
+bool read_jarvis_shortcut_usage(
+    const uint8_t* report,
+    int len,
+    uint32_t target_usage,
+    const std::unordered_map<uint32_t, usage_def_t>& usage_defs,
+    bool& represented) {
+    represented = false;
+    for (auto const& [source_usage, usage_def] : usage_defs) {
+        if (usage_def.usage_maximum != 0) {
+            if ((target_usage < source_usage) || (target_usage > usage_def.usage_maximum)) {
+                continue;
+            }
+            represented = true;
+            for (unsigned int i = 0; i < usage_def.count; i++) {
+                uint32_t bits = get_bits(report, len, usage_def.bitpos + i * usage_def.size, usage_def.size);
+                if ((bits >= usage_def.logical_minimum) &&
+                    (bits <= usage_def.logical_minimum + usage_def.usage_maximum - source_usage) &&
+                    (source_usage + bits - usage_def.logical_minimum == target_usage)) {
+                    return true;
+                }
+            }
+        } else if (source_usage == target_usage) {
+            represented = true;
+            if (usage_def.is_array) {
+                for (unsigned int i = 0; i < usage_def.count; i++) {
+                    uint32_t bits = get_bits(report, len, usage_def.bitpos + i * usage_def.size, usage_def.size);
+                    if (((usage_def.index_mask == 0) && (bits == usage_def.index)) ||
+                        (usage_def.index_mask & (1 << bits))) {
+                        return true;
+                    }
+                }
+            } else {
+                return get_bits(report, len, usage_def.bitpos, usage_def.size) != 0;
+            }
+        }
+    }
+    return false;
+}
+
+void update_jarvis_shortcuts(
+    const uint8_t* report,
+    int len,
+    uint8_t interface_idx,
+    uint8_t hub_port,
+    const std::unordered_map<uint32_t, usage_def_t>& usage_defs) {
+    uint32_t interface_mask = (uint32_t) 1 << interface_idx;
+    for (unsigned int i = 0; i < sizeof(JARVIS_SHORTCUT_USAGES) / sizeof(JARVIS_SHORTCUT_USAGES[0]); i++) {
+        bool represented = false;
+        bool down = read_jarvis_shortcut_usage(report, len, JARVIS_SHORTCUT_USAGES[i], usage_defs, represented);
+        if (!represented) {
+            continue;
+        }
+        if (down) {
+            jarvis_shortcut_key_state[i] |= interface_mask;
+        } else {
+            jarvis_shortcut_key_state[i] &= ~interface_mask;
+        }
+    }
+
+    bool pause = jarvis_shortcut_key_state[1] != 0;
+    if (pause && !jarvis_pause_latched) {
+        monitor_usage(JARVIS_SHORTCUT_USAGE_PAGE | 1, 1, hub_port);
+    }
+    jarvis_pause_latched = pause;
+
+    bool tab = jarvis_shortcut_key_state[0] != 0;
+    const unsigned int arrow_indexes[4] = { 2, 3, 4, 5 };
+    for (unsigned int i = 0; i < 4; i++) {
+        bool chord_down = tab && (jarvis_shortcut_key_state[arrow_indexes[i]] != 0);
+        if (chord_down && !jarvis_arrow_latched[i]) {
+            monitor_usage(JARVIS_SHORTCUT_USAGE_PAGE | (i + 1), 1, hub_port);
+        }
+        jarvis_arrow_latched[i] = chord_down;
+    }
+}
+
 inline void read_input(const uint8_t* report, int len, uint32_t source_usage, const usage_def_t& their_usage, uint8_t interface_idx) {
     int32_t value = 0;
     if (their_usage.is_array) {
@@ -1647,63 +1739,19 @@ inline void monitor_read_input(const uint8_t* report, int len, uint32_t source_u
 }
 
 inline void monitor_read_input_range(const uint8_t* report, int len, uint32_t source_usage, const usage_def_t& their_usage, uint8_t interface_idx, uint8_t hub_port) {
-    // Array reports list only the usages that are currently down.  Compare
-    // those few entries with the previously pressed entries instead of
-    // iterating usage_minimum..usage_maximum.  Some descriptors expose ranges
-    // with tens of thousands of usages, and scanning the whole range on every
-    // 1 ms report starves tuh_task() and stops physical pass-through.
-    // Reused fixed storage avoids heap allocation in the 1 ms USB report path.
-    static uint32_t current_usages[MAX_REPORT_SIZE * 8];
-    unsigned int current_usage_count = 0;
-    unsigned int report_usage_limit = std::min<unsigned int>(their_usage.count, MAX_REPORT_SIZE * 8);
-    auto contains_current_usage = [&](uint32_t usage) {
-        for (unsigned int i = 0; i < current_usage_count; i++) {
-            if (current_usages[i] == usage) {
-                return true;
+    // is_array and !is_relative is implied
+    for (unsigned int i = 0; i < their_usage.count; i++) {
+        uint32_t bits = get_bits(report, len, their_usage.bitpos + i * their_usage.size, their_usage.size);
+        // XXX consider negative indexes
+        if ((bits >= their_usage.logical_minimum) &&
+            (bits <= their_usage.logical_minimum + their_usage.usage_maximum - source_usage)) {
+            uint32_t actual_usage = source_usage + bits - their_usage.logical_minimum;
+            // for array range inputs, "key-up" events (value=0) don't show up in the monitor
+            if (monitor_enabled && ((actual_usage & 0xFFFF) != 0)) {
+                monitor_usage(actual_usage, 1, hub_port);
             }
         }
-        return false;
-    };
-
-    for (unsigned int i = 0; i < report_usage_limit; i++) {
-        uint32_t bits = get_bits(report, len, their_usage.bitpos + i * their_usage.size, their_usage.size);
-        if ((bits < their_usage.logical_minimum) ||
-            (bits > their_usage.logical_minimum + their_usage.usage_maximum - source_usage)) {
-            continue;
-        }
-        uint32_t actual_usage = source_usage + bits - their_usage.logical_minimum;
-        if (((actual_usage & 0xFFFF) != 0) && !contains_current_usage(actual_usage)) {
-            current_usages[current_usage_count++] = actual_usage;
-        }
     }
-
-    uint32_t interface_mask = (uint32_t) 1 << interface_idx;
-    for (unsigned int i = 0; i < current_usage_count; i++) {
-        uint32_t actual_usage = current_usages[i];
-        uint32_t& state = monitor_array_input_state[actual_usage];
-        if ((state & interface_mask) == 0) {
-            monitor_usage(actual_usage, 1, hub_port);
-        }
-        state |= interface_mask;
-    }
-
-    for (auto& [actual_usage, state] : monitor_array_input_state) {
-        bool belongs_to_range = (actual_usage >= source_usage) && (actual_usage <= their_usage.usage_maximum);
-        bool remains_down = contains_current_usage(actual_usage);
-        if (belongs_to_range && (state & interface_mask) && !remains_down) {
-            monitor_usage(actual_usage, 0, hub_port);
-            state &= ~interface_mask;
-        }
-    }
-}
-
-inline bool monitor_usage_is_down(uint32_t usage) {
-    auto scalar_it = monitor_input_state.find(usage);
-    if ((scalar_it != monitor_input_state.end()) && (scalar_it->second != 0)) {
-        return true;
-    }
-    auto array_it = monitor_array_input_state.find(usage);
-    return (array_it != monitor_array_input_state.end()) && (array_it->second != 0);
 }
 
 void handle_received_report(const uint8_t* report, int len, uint16_t interface, uint8_t external_report_id) {
@@ -1771,6 +1819,14 @@ void do_handle_received_report(const uint8_t* report, int len, uint16_t interfac
     }
 
     if (monitor_enabled) {
+        // Shortcut detection inspects only six fixed keyboard usages and does
+        // not alter the physical report, mapping state or pass-through path.
+        update_jarvis_shortcuts(
+            report,
+            len,
+            interface_idx,
+            hub_port,
+            their_usages[interface][report_id]);
         for (auto const& [their_usage, their_usage_def] : their_usages[interface][report_id]) {
             if (their_usage_def.usage_maximum == 0) {
                 monitor_read_input(report, len, their_usage, their_usage_def, interface_idx, hub_port);
@@ -1778,13 +1834,6 @@ void do_handle_received_report(const uint8_t* report, int len, uint16_t interfac
                 monitor_read_input_range(report, len, their_usage, their_usage_def, interface_idx, hub_port);
             }
         }
-        jarvis_update_shortcuts(
-            monitor_usage_is_down(0x0007002B),
-            monitor_usage_is_down(0x00070048),
-            monitor_usage_is_down(0x00070052),
-            monitor_usage_is_down(0x00070051),
-            monitor_usage_is_down(0x00070050),
-            monitor_usage_is_down(0x0007004F));
     }
 
     my_mutex_exit(MutexId::THEIR_USAGES);
@@ -2173,12 +2222,11 @@ void inject_clear_keys() {
 }
 
 void set_monitor_enabled(bool enabled) {
-    monitor_input_state.clear();
-    monitor_array_input_state.clear();
-    monitor_usages_queued = 0;
-    memset(&(monitor_report[monitor_report_idx].items), 0, sizeof(monitor_report[0].items));
-    jarvis_reset_shortcuts();
-    monitor_enabled = enabled;
+    if (monitor_enabled != enabled) {
+        monitor_input_state.clear();
+        reset_jarvis_shortcuts();
+        monitor_enabled = enabled;
+    }
 }
 
 void device_connected_callback(uint16_t interface, uint16_t vid, uint16_t pid, uint8_t hub_port) {
@@ -2192,6 +2240,7 @@ void device_disconnected_callback(uint8_t dev_addr) {
     if (our_descriptor->device_disconnected != nullptr) {
         our_descriptor->device_disconnected(dev_addr);
     }
+    reset_jarvis_shortcuts();
     clear_descriptor_data(dev_addr);
     uint8_t hub_port = hub_ports[dev_addr];
     if ((hub_port != 0) && (hub_port != HUB_PORT_NONE)) {

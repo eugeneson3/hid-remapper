@@ -35,7 +35,6 @@ enum class ConfigCommand : int8_t {
     INJECT_KEY_DOWN = 26,
     INJECT_KEY_UP = 27,
     INJECT_CLEAR_KEYS = 28,
-    SET_JARVIS_AUTO_HUNTING = 29,
 };
 
 struct usage_def_t {
@@ -206,11 +205,6 @@ struct __attribute__((packed)) set_feature_t {
 
 struct __attribute__((packed)) inject_key_t {
     uint32_t usage;
-    uint16_t ttl_ms;
-};
-
-struct __attribute__((packed)) jarvis_auto_hunting_t {
-    uint8_t enabled;
     uint16_t ttl_ms;
 };
 

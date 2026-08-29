@@ -7,19 +7,16 @@ _For user documentation please see the project's website at [remapper.org](https
 Jarvis uses the Pico SDK `remapper` target for `PICO_BOARD=feather_host`, based
 on stable source commit `cb0697468050e67e184e0df644d995f9aab2923e`. The
 nightly keeps physical keyboard pass-through and feature-report injection, and
-adds firmware monitor events for physical key down/up transitions.
+adds only Jarvis shortcut detection to the existing stable monitor path.
 
-The monitor emits vendor usages for `Pause` or `Tab+Up` (auto hunting),
-`Tab+Down` (rune capture), and reserved `Tab+Left`/`Tab+Right` shortcuts. Feature
-command 29 carries the Jarvis auto-hunting state with a TTL. While active, the
-onboard Feather NeoPixel uses GPIO21 with GPIO20 power and breathes green using
-an ease-in/ease-out curve. Pico-PIO-USB is initialized first so it owns
-PIO0/SM0; the NeoPixel then claims a remaining state machine. If no PIO resource
-is available, only the status LED is disabled and USB pass-through remains
-available. Array monitor reports compare only usages that are currently or
-previously pressed; they never scan the descriptor's entire usage range in the
-1 ms USB report path. QMK, C0 and watchdog recovery experiments are not part of
-this source baseline.
+`firmware_nightly_shortcut.uf2` is built after restoring the complete
+`firmware` tree from stable commit `cb0697468050e67e184e0df644d995f9aab2923e`.
+Its only source difference from that tree is shortcut detection in
+`firmware/src/remapper.cc`. The existing stable monitor emits `FFFA:0001` for
+`Pause` or `Tab+Up`, `FFFA:0002` for `Tab+Down`, and reserved `FFFA:0003` and
+`FFFA:0004` for `Tab+Left` and `Tab+Right`. The physical keyboard report and
+pass-through path are not modified. The failed NeoPixel, command 29 and monitor
+key-up experiments are not included.
 
 This is a configurable USB dongle that allows you to remap inputs from mice, keyboards and other devices. It works completely in hardware and requires no software running on the computer during normal use.
 
