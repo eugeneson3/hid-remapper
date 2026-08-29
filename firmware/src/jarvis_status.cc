@@ -88,13 +88,21 @@ void emit_shortcut(JarvisShortcut shortcut) {
 
 void jarvis_status_init() {
 #if defined(FEATHER_HOST_BOARD) && defined(PICO_DEFAULT_WS2812_PIN)
+    // USB Host already owns PIO0/SM0.  If no remaining PIO resource is
+    // available, keep the remapper running and disable only the status LED.
+    if (!pio_can_add_program(led_pio, &ws2812_program)) {
+        return;
+    }
+    led_sm = pio_claim_unused_sm(led_pio, false);
+    if (led_sm < 0) {
+        return;
+    }
+    uint offset = pio_add_program(led_pio, &ws2812_program);
 #ifdef PICO_DEFAULT_WS2812_POWER_PIN
     gpio_init(PICO_DEFAULT_WS2812_POWER_PIN);
     gpio_set_dir(PICO_DEFAULT_WS2812_POWER_PIN, GPIO_OUT);
     gpio_put(PICO_DEFAULT_WS2812_POWER_PIN, 1);
 #endif
-    uint offset = pio_add_program(led_pio, &ws2812_program);
-    led_sm = pio_claim_unused_sm(led_pio, true);
     ws2812_program_init(led_pio, led_sm, offset, PICO_DEFAULT_WS2812_PIN, 800000);
     write_green(0);
 #endif

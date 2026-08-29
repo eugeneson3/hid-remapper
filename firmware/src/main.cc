@@ -253,9 +253,11 @@ int main() {
     parse_our_descriptor();
     set_mapping_from_config();
     board_init();
-    jarvis_status_init();
     extra_init();
     tusb_init();
+    // Pico-PIO-USB claims PIO0/SM0 during tusb_init().  The status NeoPixel
+    // must claim a remaining state machine afterwards or USB Host panics.
+    jarvis_status_init();
     stdio_init_all();
 
     tud_sof_isr_set(sof_handler);

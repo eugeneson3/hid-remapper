@@ -13,8 +13,11 @@ The monitor emits vendor usages for `Pause` or `Tab+Up` (auto hunting),
 `Tab+Down` (rune capture), and reserved `Tab+Left`/`Tab+Right` shortcuts. Feature
 command 29 carries the Jarvis auto-hunting state with a TTL. While active, the
 onboard Feather NeoPixel uses GPIO21 with GPIO20 power and breathes green using
-an ease-in/ease-out curve. QMK, C0 and watchdog recovery experiments are not
-part of this source baseline.
+an ease-in/ease-out curve. Pico-PIO-USB is initialized first so it owns
+PIO0/SM0; the NeoPixel then claims a remaining state machine. If no PIO resource
+is available, only the status LED is disabled and USB pass-through remains
+available. QMK, C0 and watchdog recovery experiments are not part of this
+source baseline.
 
 This is a configurable USB dongle that allows you to remap inputs from mice, keyboards and other devices. It works completely in hardware and requires no software running on the computer during normal use.
 
