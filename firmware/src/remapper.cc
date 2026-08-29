@@ -34,6 +34,25 @@ const uint32_t MACRO_USAGE_PAGE = 0xFFF20000;
 const uint32_t EXPR_USAGE_PAGE = 0xFFF30000;
 const uint32_t REGISTER_USAGE_PAGE = 0xFFF50000;
 const uint32_t MIDI_USAGE_PAGE = 0xFFF70000;
+const uint32_t KEYBOARD_USAGE_PAGE = 0x00070000;
+
+const uint32_t KEYBOARD_USAGE_TAB = 0x0007002B;
+const uint32_t KEYBOARD_USAGE_PAUSE = 0x00070048;
+const uint32_t KEYBOARD_USAGE_RIGHT = 0x0007004F;
+const uint32_t KEYBOARD_USAGE_LEFT = 0x00070050;
+const uint32_t KEYBOARD_USAGE_DOWN = 0x00070051;
+const uint32_t KEYBOARD_USAGE_UP = 0x00070052;
+
+// Internal events carried by the existing FF00:0021 monitor report. hub_port 0
+// distinguishes them from usages reported by a physical USB device.
+const uint32_t SHORTCUT_EVENT_AUTO_ATTACK = 0xFFFC0001;
+const uint32_t SHORTCUT_EVENT_RUNE_CAPTURE = 0xFFFC0002;
+const uint32_t SHORTCUT_EVENT_LEFT_RESERVED = 0xFFFC0003;
+const uint32_t SHORTCUT_EVENT_RIGHT_RESERVED = 0xFFFC0004;
+const uint64_t SHORTCUT_ARM_GRACE_US = 100000;
+const uint8_t SHORTCUT_REPORT_STATE_COUNT = 32;
+const uint8_t SHORTCUT_READERS_PER_REPORT = 12;
+const uint8_t SHORTCUT_DEVICE_STATE_COUNT = 16;
 
 const uint32_t ROLLOVER_USAGE = 0x00070001;
 
@@ -113,6 +132,67 @@ std::unordered_map<uint32_t, int32_t> monitor_input_state;
 uint8_t monitor_usages_queued = 0;
 monitor_report_t monitor_report[2] = { { .report_id = REPORT_ID_MONITOR }, { .report_id = REPORT_ID_MONITOR } };
 uint8_t monitor_report_idx = 0;
+static bool physical_key_down_activity_pending = false;
+
+enum ShortcutKey : uint8_t {
+    SHORTCUT_KEY_TAB = 1 << 0,
+    SHORTCUT_KEY_PAUSE = 1 << 1,
+    SHORTCUT_KEY_UP = 1 << 2,
+    SHORTCUT_KEY_DOWN = 1 << 3,
+    SHORTCUT_KEY_LEFT = 1 << 4,
+    SHORTCUT_KEY_RIGHT = 1 << 5,
+};
+
+enum ShortcutLatch : uint8_t {
+    SHORTCUT_LATCH_PAUSE = 1 << 0,
+    SHORTCUT_LATCH_TAB_UP = 1 << 1,
+    SHORTCUT_LATCH_TAB_DOWN = 1 << 2,
+    SHORTCUT_LATCH_TAB_LEFT = 1 << 3,
+    SHORTCUT_LATCH_TAB_RIGHT = 1 << 4,
+};
+
+struct shortcut_usage_reader_t {
+    uint8_t key_mask;
+    uint32_t target_usage;
+    uint32_t source_usage;
+    usage_def_t usage_def;
+};
+
+struct shortcut_report_state_t {
+    bool active = false;
+    uint16_t interface;
+    uint8_t report_id;
+    uint8_t pressed_mask = 0;
+    uint8_t reader_count = 0;
+    shortcut_usage_reader_t readers[SHORTCUT_READERS_PER_REPORT];
+};
+
+shortcut_report_state_t shortcut_report_states[SHORTCUT_REPORT_STATE_COUNT];
+
+struct shortcut_device_state_t {
+    bool active = false;
+    bool disabled = false;
+    uint8_t dev_addr;
+    uint8_t latches = 0;
+    bool seen_report = false;
+    bool armed = false;
+    uint64_t arm_after = 0;
+};
+
+shortcut_device_state_t shortcut_device_states[SHORTCUT_DEVICE_STATE_COUNT];
+
+struct shortcut_pending_event_t {
+    uint32_t usage;
+    uint8_t dev_addr;
+};
+
+const uint8_t SHORTCUT_EVENT_QUEUE_SIZE = 16;
+shortcut_pending_event_t shortcut_event_queue[SHORTCUT_EVENT_QUEUE_SIZE];
+uint8_t shortcut_event_head = 0;
+uint8_t shortcut_event_tail = 0;
+uint8_t shortcut_event_count = 0;
+monitor_report_t shortcut_monitor_report[2] = { { .report_id = REPORT_ID_MONITOR }, { .report_id = REPORT_ID_MONITOR } };
+uint8_t shortcut_monitor_report_idx = 0;
 
 #define NREGISTERS 32
 int32_t registers[NREGISTERS] = { 0 };
@@ -231,6 +311,204 @@ inline uint32_t get_bits(const uint8_t* data, int len, uint16_t bitpos, uint8_t 
         value |= get_bit(data, len, bitpos + i) << i;
     }
     return value;
+}
+
+static void clear_shortcut_event_queue() {
+    shortcut_event_head = 0;
+    shortcut_event_tail = 0;
+    shortcut_event_count = 0;
+}
+
+static void reset_shortcut_detection() {
+    for (auto& state : shortcut_report_states) {
+        state.active = false;
+        state.pressed_mask = 0;
+        state.reader_count = 0;
+    }
+    for (auto& device : shortcut_device_states) {
+        device.active = false;
+        device.disabled = false;
+        device.latches = 0;
+        device.seen_report = false;
+        device.armed = false;
+        device.arm_after = 0;
+    }
+}
+
+static bool shortcut_usage_pressed(const uint8_t* report, int len, const shortcut_usage_reader_t& reader) {
+    const usage_def_t& usage_def = reader.usage_def;
+
+    if (usage_def.usage_maximum != 0) {
+        for (uint32_t i = 0; i < usage_def.count; i++) {
+            int64_t value = get_bits(report, len, usage_def.bitpos + i * usage_def.size, usage_def.size);
+            int64_t actual_usage = (int64_t) reader.source_usage + value - usage_def.logical_minimum;
+            if (actual_usage == reader.target_usage) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    if (usage_def.is_array) {
+        for (uint32_t i = 0; i < usage_def.count; i++) {
+            uint32_t value = get_bits(report, len, usage_def.bitpos + i * usage_def.size, usage_def.size);
+            if (((usage_def.index_mask == 0) && (value == usage_def.index)) ||
+                ((value < 8) && (usage_def.index_mask & (1 << value)))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    return get_bits(report, len, usage_def.bitpos, usage_def.size) != 0;
+}
+
+static shortcut_device_state_t* get_shortcut_device_state(uint8_t dev_addr) {
+    for (auto& device : shortcut_device_states) {
+        if (device.active && (device.dev_addr == dev_addr)) {
+            return &device;
+        }
+    }
+    return nullptr;
+}
+
+static shortcut_device_state_t* add_shortcut_device_state(uint8_t dev_addr) {
+    shortcut_device_state_t* existing = get_shortcut_device_state(dev_addr);
+    if (existing != nullptr) {
+        return existing;
+    }
+
+    for (auto& device : shortcut_device_states) {
+        if (!device.active) {
+            device = {
+                .active = true,
+                .disabled = false,
+                .dev_addr = dev_addr,
+                .latches = 0,
+                .seen_report = false,
+                .armed = false,
+                .arm_after = monitor_enabled ? get_time() + SHORTCUT_ARM_GRACE_US : 0,
+            };
+            return &device;
+        }
+    }
+    return nullptr;
+}
+
+static void queue_shortcut_event(uint32_t usage, uint8_t dev_addr) {
+    if (shortcut_event_count == SHORTCUT_EVENT_QUEUE_SIZE) {
+        return;
+    }
+    shortcut_event_queue[shortcut_event_tail] = {
+        .usage = usage,
+        .dev_addr = dev_addr,
+    };
+    shortcut_event_tail = (shortcut_event_tail + 1) % SHORTCUT_EVENT_QUEUE_SIZE;
+    shortcut_event_count++;
+}
+
+static uint8_t get_shortcut_pressed_mask(uint8_t dev_addr) {
+    uint8_t pressed_mask = 0;
+    for (auto const& state : shortcut_report_states) {
+        if (state.active && ((state.interface >> 8) == dev_addr)) {
+            pressed_mask |= state.pressed_mask;
+        }
+    }
+    return pressed_mask;
+}
+
+static void update_shortcut_latches(uint8_t dev_addr) {
+    shortcut_device_state_t* device = get_shortcut_device_state(dev_addr);
+    if ((device == nullptr) || device->disabled) {
+        return;
+    }
+    const uint8_t pressed_mask = get_shortcut_pressed_mask(dev_addr);
+
+    if (!device->armed) {
+        if (pressed_mask == 0) {
+            device->armed = true;
+            device->arm_after = 0;
+        }
+        device->latches = 0;
+        return;
+    }
+
+    uint8_t active_latches = 0;
+    if (pressed_mask & SHORTCUT_KEY_PAUSE) {
+        active_latches |= SHORTCUT_LATCH_PAUSE;
+    }
+    if ((pressed_mask & (SHORTCUT_KEY_TAB | SHORTCUT_KEY_UP)) == (SHORTCUT_KEY_TAB | SHORTCUT_KEY_UP)) {
+        active_latches |= SHORTCUT_LATCH_TAB_UP;
+    }
+    if ((pressed_mask & (SHORTCUT_KEY_TAB | SHORTCUT_KEY_DOWN)) == (SHORTCUT_KEY_TAB | SHORTCUT_KEY_DOWN)) {
+        active_latches |= SHORTCUT_LATCH_TAB_DOWN;
+    }
+    if ((pressed_mask & (SHORTCUT_KEY_TAB | SHORTCUT_KEY_LEFT)) == (SHORTCUT_KEY_TAB | SHORTCUT_KEY_LEFT)) {
+        active_latches |= SHORTCUT_LATCH_TAB_LEFT;
+    }
+    if ((pressed_mask & (SHORTCUT_KEY_TAB | SHORTCUT_KEY_RIGHT)) == (SHORTCUT_KEY_TAB | SHORTCUT_KEY_RIGHT)) {
+        active_latches |= SHORTCUT_LATCH_TAB_RIGHT;
+    }
+
+    const uint8_t rising_latches = active_latches & ~device->latches;
+    if (rising_latches & (SHORTCUT_LATCH_PAUSE | SHORTCUT_LATCH_TAB_UP)) {
+        queue_shortcut_event(SHORTCUT_EVENT_AUTO_ATTACK, dev_addr);
+    }
+    if (rising_latches & SHORTCUT_LATCH_TAB_DOWN) {
+        queue_shortcut_event(SHORTCUT_EVENT_RUNE_CAPTURE, dev_addr);
+    }
+    if (rising_latches & SHORTCUT_LATCH_TAB_LEFT) {
+        queue_shortcut_event(SHORTCUT_EVENT_LEFT_RESERVED, dev_addr);
+    }
+    if (rising_latches & SHORTCUT_LATCH_TAB_RIGHT) {
+        queue_shortcut_event(SHORTCUT_EVENT_RIGHT_RESERVED, dev_addr);
+    }
+
+    device->latches = active_latches;
+}
+
+static void arm_shortcuts_after_grace_period() {
+    if (!monitor_enabled) {
+        return;
+    }
+
+    const uint64_t now = get_time();
+    for (auto& device : shortcut_device_states) {
+        if (device.active && !device.disabled && !device.armed && !device.seen_report && (device.arm_after != 0) &&
+            (now >= device.arm_after) && (get_shortcut_pressed_mask(device.dev_addr) == 0)) {
+            device.armed = true;
+            device.arm_after = 0;
+        }
+    }
+}
+
+static void handle_shortcut_report(const uint8_t* report, int len, uint16_t interface, uint8_t report_id) {
+    bool state_updated = false;
+    for (auto& state : shortcut_report_states) {
+        if (!state.active || (state.interface != interface) || (state.report_id != report_id)) {
+            continue;
+        }
+
+        uint8_t pressed_mask = 0;
+        for (uint8_t i = 0; i < state.reader_count; i++) {
+            if (shortcut_usage_pressed(report, len, state.readers[i])) {
+                pressed_mask |= state.readers[i].key_mask;
+            }
+        }
+        state.pressed_mask = pressed_mask;
+        state_updated = true;
+    }
+
+    if (state_updated) {
+        const uint8_t dev_addr = interface >> 8;
+        shortcut_device_state_t* device = get_shortcut_device_state(dev_addr);
+        if (device != nullptr) {
+            device->seen_report = true;
+        }
+        if (monitor_enabled) {
+            update_shortcut_latches(dev_addr);
+        }
+    }
 }
 
 inline void put_bit(uint8_t* data, int len, uint16_t bitpos, uint8_t value) {
@@ -1499,8 +1777,47 @@ bool send_report(send_report_t do_send_report) {
     return sent;
 }
 
+static bool send_shortcut_monitor_report(send_report_t do_send_report) {
+    if (shortcut_event_count == 0) {
+        return false;
+    }
+
+    monitor_report_t& report = shortcut_monitor_report[shortcut_monitor_report_idx];
+    memset(&(report.items), 0, sizeof(report.items));
+
+    const uint8_t report_capacity = sizeof(report.items) / sizeof(report.items[0]);
+    const uint8_t item_count = std::min(shortcut_event_count, report_capacity);
+    for (uint8_t i = 0; i < item_count; i++) {
+        const shortcut_pending_event_t& event =
+            shortcut_event_queue[(shortcut_event_head + i) % SHORTCUT_EVENT_QUEUE_SIZE];
+        report.items[i] = {
+            .usage = event.usage,
+            .value = 1,
+            .hub_port = 0,
+        };
+    }
+
+    bool sent = do_send_report(1, (uint8_t*) &report, sizeof(monitor_report_t));
+    if (sent) {
+        shortcut_event_head = (shortcut_event_head + item_count) % SHORTCUT_EVENT_QUEUE_SIZE;
+        shortcut_event_count -= item_count;
+        shortcut_monitor_report_idx = (shortcut_monitor_report_idx + 1) % 2;
+    }
+    return sent;
+}
+
 bool send_monitor_report(send_report_t do_send_report) {
-    if ((monitor_usages_queued == 0) || suspended) {
+    arm_shortcuts_after_grace_period();
+
+    if (suspended) {
+        return false;
+    }
+
+    if (shortcut_event_count != 0) {
+        return send_shortcut_monitor_report(do_send_report);
+    }
+
+    if (monitor_usages_queued == 0) {
         return false;
     }
 
@@ -1680,6 +1997,48 @@ static inline bool is_rollover(const uint8_t* report, int len, uint16_t interfac
     return false;
 }
 
+static bool has_new_physical_key_down(const uint8_t* report, int len, uint16_t interface, uint8_t report_id) {
+    const uint8_t interface_idx = interface_index[interface];
+    const int32_t interface_mask = 1 << interface_idx;
+
+    for (auto const& their : their_used_usages[interface][report_id]) {
+        const uint32_t source_usage = their.usage;
+        const usage_def_t& usage_def = their.usage_def;
+        if (usage_def.is_relative || ((source_usage & 0xFFFF0000) != KEYBOARD_USAGE_PAGE)) {
+            continue;
+        }
+
+        if (usage_def.usage_maximum == 0) {
+            int32_t value = get_bits(report, len, usage_def.bitpos, usage_def.size);
+            if ((usage_def.logical_minimum < 0) || (usage_def.logical_maximum < 0)) {
+                if (value & (1 << (usage_def.size - 1))) {
+                    value |= 0xFFFFFFFF << usage_def.size;
+                }
+            }
+            if ((value != 0) && (usage_def.input_state_0 != NULL) &&
+                ((*(usage_def.input_state_0) & interface_mask) == 0)) {
+                return true;
+            }
+            continue;
+        }
+
+        for (unsigned int i = 0; i < usage_def.count; i++) {
+            const uint32_t bits = get_bits(report, len, usage_def.bitpos + i * usage_def.size, usage_def.size);
+            const int64_t actual_usage_signed = (int64_t) source_usage + bits - usage_def.logical_minimum;
+            if ((actual_usage_signed < source_usage) || (actual_usage_signed > usage_def.usage_maximum)) {
+                continue;
+            }
+            const uint32_t actual_usage = actual_usage_signed;
+            int32_t* state_ptr = get_state_ptr(actual_usage, 0);
+            if ((state_ptr != NULL) && ((*state_ptr & interface_mask) == 0)) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
 void do_handle_received_report(const uint8_t* report, int len, uint16_t interface, uint8_t external_report_id) {
     if (len == 0) {
         return;
@@ -1707,6 +2066,9 @@ void do_handle_received_report(const uint8_t* report, int len, uint16_t interfac
     }
 
     if (!is_rollover(report, len, interface, report_id)) {
+        if (has_new_physical_key_down(report, len, interface, report_id)) {
+            physical_key_down_activity_pending = true;
+        }
         for (int32_t* state_ptr : array_range_usages[interface][report_id]) {
             *state_ptr &= ~(1 << interface_idx);
         }
@@ -1718,6 +2080,8 @@ void do_handle_received_report(const uint8_t* report, int len, uint16_t interfac
                 read_input_range(report, len, their.usage, their.usage_def, interface_idx, hub_port);
             }
         }
+
+        handle_shortcut_report(report, len, interface, report_id);
     }
 
     if (monitor_enabled) {
@@ -1782,6 +2146,12 @@ void handle_received_midi(uint8_t hub_port, uint8_t* midi_msg) {
     }
 }
 
+bool take_physical_key_down_activity() {
+    const bool pending = physical_key_down_activity_pending;
+    physical_key_down_activity_pending = false;
+    return pending;
+}
+
 void set_input_state(uint32_t usage, int32_t state_raw, int32_t state_scaled, uint8_t hub_port) {
     int32_t* state_ptr = get_state_ptr(usage, hub_port, false, true);
     if (state_ptr != NULL) {
@@ -1831,6 +2201,87 @@ bool should_scale_input(const usage_def_t& their_usage) {
         return false;
     }
     return true;
+}
+
+static void rebuild_shortcut_report_states() {
+    struct shortcut_target_t {
+        uint32_t usage;
+        uint8_t key_mask;
+    };
+
+    static const shortcut_target_t shortcut_targets[] = {
+        { KEYBOARD_USAGE_TAB, SHORTCUT_KEY_TAB },
+        { KEYBOARD_USAGE_PAUSE, SHORTCUT_KEY_PAUSE },
+        { KEYBOARD_USAGE_UP, SHORTCUT_KEY_UP },
+        { KEYBOARD_USAGE_DOWN, SHORTCUT_KEY_DOWN },
+        { KEYBOARD_USAGE_LEFT, SHORTCUT_KEY_LEFT },
+        { KEYBOARD_USAGE_RIGHT, SHORTCUT_KEY_RIGHT },
+    };
+
+    reset_shortcut_detection();
+
+    for (auto const& [interface, report_id_usage_map] : their_usages) {
+        if (interface == OUR_OUT_INTERFACE) {
+            continue;
+        }
+        for (auto const& [report_id, usage_map] : report_id_usage_map) {
+            shortcut_report_state_t* state = nullptr;
+            shortcut_device_state_t* device = nullptr;
+            bool report_failed = false;
+
+            for (auto const& [source_usage, usage_def] : usage_map) {
+                for (auto const& target : shortcut_targets) {
+                    const bool direct_match = (usage_def.usage_maximum == 0) && (source_usage == target.usage);
+                    const bool range_match = (usage_def.usage_maximum != 0) &&
+                                             (target.usage >= source_usage) &&
+                                             (target.usage <= usage_def.usage_maximum);
+                    if (direct_match || range_match) {
+                        if (state == nullptr) {
+                            const uint8_t dev_addr = interface >> 8;
+                            device = add_shortcut_device_state(dev_addr);
+                            if ((device == nullptr) || device->disabled) {
+                                report_failed = true;
+                                break;
+                            }
+                            for (auto& candidate : shortcut_report_states) {
+                                if (!candidate.active) {
+                                    candidate = {
+                                        .active = true,
+                                        .interface = interface,
+                                        .report_id = report_id,
+                                        .pressed_mask = 0,
+                                        .reader_count = 0,
+                                    };
+                                    state = &candidate;
+                                    break;
+                                }
+                            }
+                            if (state == nullptr) {
+                                device->disabled = true;
+                                report_failed = true;
+                                break;
+                            }
+                        }
+
+                        if (state->reader_count == SHORTCUT_READERS_PER_REPORT) {
+                            device->disabled = true;
+                            report_failed = true;
+                            break;
+                        }
+                        state->readers[state->reader_count++] = {
+                            .key_mask = target.key_mask,
+                            .target_usage = target.usage,
+                            .source_usage = source_usage,
+                            .usage_def = usage_def,
+                        };
+                    }
+                }
+                if (report_failed) {
+                    break;
+                }
+            }
+        }
+    }
 }
 
 void update_their_descriptor_derivates() {
@@ -1982,6 +2433,8 @@ void update_their_descriptor_derivates() {
                 });
         }
     }
+
+    rebuild_shortcut_report_states();
 }
 
 void parse_our_descriptor() {
@@ -2115,11 +2568,39 @@ void inject_clear_keys() {
     memset(injected_usages, 0, sizeof(injected_usages));
 }
 
+static void reset_monitor_reports_and_shortcut_latches(bool enabled) {
+    memset(&(monitor_report[monitor_report_idx].items), 0, sizeof(monitor_report[0].items));
+    monitor_usages_queued = 0;
+    clear_shortcut_event_queue();
+    memset(&(shortcut_monitor_report[shortcut_monitor_report_idx].items), 0,
+           sizeof(shortcut_monitor_report[0].items));
+    for (auto& device : shortcut_device_states) {
+        if (!device.active) {
+            continue;
+        }
+        device.latches = 0;
+        device.armed = false;
+        device.arm_after = 0;
+        if (device.disabled) {
+            continue;
+        }
+        const bool released = get_shortcut_pressed_mask(device.dev_addr) == 0;
+        device.armed = enabled && device.seen_report && released;
+        device.arm_after = enabled && !device.seen_report && released ? get_time() + SHORTCUT_ARM_GRACE_US : 0;
+    }
+}
+
 void set_monitor_enabled(bool enabled) {
     if (monitor_enabled != enabled) {
         monitor_input_state.clear();
+        reset_monitor_reports_and_shortcut_latches(enabled);
         monitor_enabled = enabled;
     }
+}
+
+void usb_device_unmounted_callback() {
+    reset_monitor_reports_and_shortcut_latches(false);
+    monitor_enabled = false;
 }
 
 void device_connected_callback(uint16_t interface, uint16_t vid, uint16_t pid, uint8_t hub_port) {
@@ -2130,6 +2611,37 @@ void device_connected_callback(uint16_t interface, uint16_t vid, uint16_t pid, u
 }
 
 void device_disconnected_callback(uint8_t dev_addr) {
+    for (auto& state : shortcut_report_states) {
+        if (state.active && ((state.interface >> 8) == dev_addr)) {
+            state.active = false;
+            state.pressed_mask = 0;
+            state.reader_count = 0;
+        }
+    }
+    shortcut_device_state_t* device = get_shortcut_device_state(dev_addr);
+    if (device != nullptr) {
+        device->active = false;
+        device->disabled = false;
+        device->latches = 0;
+        device->seen_report = false;
+        device->armed = false;
+        device->arm_after = 0;
+    }
+
+    shortcut_pending_event_t retained_events[SHORTCUT_EVENT_QUEUE_SIZE];
+    uint8_t retained_count = 0;
+    for (uint8_t i = 0; i < shortcut_event_count; i++) {
+        const shortcut_pending_event_t& event =
+            shortcut_event_queue[(shortcut_event_head + i) % SHORTCUT_EVENT_QUEUE_SIZE];
+        if (event.dev_addr != dev_addr) {
+            retained_events[retained_count++] = event;
+        }
+    }
+    memcpy(shortcut_event_queue, retained_events, retained_count * sizeof(shortcut_pending_event_t));
+    shortcut_event_head = 0;
+    shortcut_event_count = retained_count;
+    shortcut_event_tail = retained_count % SHORTCUT_EVENT_QUEUE_SIZE;
+
     if (our_descriptor->device_disconnected != nullptr) {
         our_descriptor->device_disconnected(dev_addr);
     }

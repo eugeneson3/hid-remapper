@@ -2,6 +2,7 @@
 #include <cstring>
 #include <unordered_set>
 
+#include "activity_led.h"
 #include "config.h"
 #include "crc.h"
 #include "globals.h"
@@ -1131,6 +1132,15 @@ void handle_set_report1(uint8_t report_id, uint8_t const* buffer, uint16_t bufsi
                     inject_clear_keys();
                     set_tick_pending();
                     break;
+                case ConfigCommand::SET_AUTO_ATTACK_STATE: {
+                    auto_attack_state_t* state = (auto_attack_state_t*) config_buffer->data;
+                    if (state->running > 1) {
+                        last_config_command = ConfigCommand::INVALID_COMMAND;
+                        break;
+                    }
+                    activity_led_set_auto_attack_state(state->running == 1, state->ttl_ms);
+                    break;
+                }
                 default:
                     last_config_command = ConfigCommand::INVALID_COMMAND;
                     break;

@@ -252,6 +252,7 @@ int main() {
     parse_our_descriptor();
     set_mapping_from_config();
     board_init();
+    activity_led_init();
     extra_init();
     tusb_init();
     stdio_init_all();
@@ -264,7 +265,7 @@ int main() {
         bool tick;
         bool new_report;
         read_report(&new_report, &tick);
-        if (new_report) {
+        if (new_report && take_physical_key_down_activity()) {
             activity_led_on();
         }
         if (their_descriptor_updated) {

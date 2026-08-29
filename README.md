@@ -8,6 +8,34 @@ It can do things like reassign buttons, change keyboard layouts, map mouse butto
 
 It is configurable [through a web browser](https://www.remapper.org/config/) using WebHID (Chrome or Chrome-based browser required).
 
+## Jarvis Feather candidate
+
+This checkout contains an unpromoted Jarvis-specific Feather candidate derived directly from commit `cb0697468050e67e184e0df644d995f9aab2923e`. The Jarvis app's known-good `firmware_stable.uf2` is not replaced by this candidate.
+
+For the `feather_host` `remapper` target, the candidate adds:
+
+- read-only physical-key shortcut observation without modifying or consuming pass-through reports;
+- existing `FF00:0021` monitor events `FFFC:0001` (Pause or Tab+Up), `0002` (Tab+Down), and reserved `0003/0004` (Tab+Left/Right);
+- one event per rising edge with latch reset on key release, monitor disable, keyboard disconnect, or PC USB unmount;
+- feature command 30 with packed payload `running:uint8` followed by `ttl_ms:uint16` little-endian;
+- a GPIO13/D13 red LED smoothstep breathing status with one second maximum-to-minimum and one second minimum-to-maximum halves.
+
+Outside auto-attack, D13 gives its existing 50 ms activity pulse only when a physical keyboard key changes from up to down. A key-up-only report does not pulse it; while auto-attack is ON, the breathing status always takes precedence.
+
+Command 30 turns breathing on only for `running=1`. A zero TTL selects 5 seconds; nonzero TTLs are clamped to 1--30 seconds. Repeated ON reports refresh expiry without restarting the animation. OFF, TTL expiry, USB unmount, and reboot stop breathing immediately. Existing commands 22 and 26--28, configuration version 18, VID/PID `046D:C52B`, descriptors, and physical/injected-key merging remain unchanged.
+
+Build the current candidate without the boot-time LED self-test:
+
+```sh
+cd firmware
+PICO_BOARD=feather_host cmake -S . -B build-stage-d2-auto-state-wsl-20260829 \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DJARVIS_D13_LED_SELF_TEST=OFF
+cmake --build build-stage-d2-auto-state-wsl-20260829 --target remapper --parallel 4
+```
+
+The recorded candidate artifact is `build-stage-d2-auto-state-wsl-20260829/remapper_stage_d2_auto_state.uf2`, 364,544 bytes, SHA-256 `0832AF829214739A36A59F5347FEB05D621FB6CADA3DBA329181C47C8F769AD1`. Do not copy it over the Jarvis stable artifact without an explicit promotion decision and complete hardware validation.
+
 Wireless receivers are supported and multiple devices can be connected at the same time using a USB hub (with different mappings for each device if desired).
 
 In addition to the remapping functionality, it can do polling rate overclocking up to 1000 Hz.

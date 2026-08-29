@@ -15,6 +15,8 @@ include(pico_sdk_import.cmake)
 
 project(remapper)
 
+option(JARVIS_D13_LED_SELF_TEST "Start the Feather D13 breathing LED at boot" OFF)
+
 pico_sdk_init()
 
 check_and_add_pico_pio_usb_support()
@@ -73,6 +75,14 @@ target_link_libraries(remapper
     tinyusb_pico_pio_usb
     usb_midi_host
 )
+
+if(PICO_BOARD STREQUAL "feather_host")
+target_compile_definitions(remapper PRIVATE JARVIS_D13_STATUS_LED=1)
+target_link_libraries(remapper hardware_pwm)
+if(JARVIS_D13_LED_SELF_TEST)
+target_compile_definitions(remapper PRIVATE JARVIS_D13_LED_SELF_TEST=1)
+endif()
+endif()
 
 pico_set_binary_type(remapper copy_to_ram)
 if(PICO_PLATFORM STREQUAL "rp2040")

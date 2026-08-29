@@ -26,6 +26,7 @@
 
 #include <tusb.h>
 
+#include "activity_led.h"
 #include "config.h"
 #include "globals.h"
 #include "our_descriptor.h"
@@ -225,6 +226,11 @@ void tud_mount_cb() {
         boot_protocol_keyboard = false;
         boot_protocol_updated = true;
     }
+}
+
+void tud_umount_cb() {
+    activity_led_clear_auto_attack_state();
+    usb_device_unmounted_callback();
 }
 
 void tud_suspend_cb(bool remote_wakeup_en) {

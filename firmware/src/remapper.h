@@ -24,6 +24,7 @@ void set_input_state(uint32_t usage, int32_t state_raw, int32_t state_scaled, ui
 
 void extra_init();
 void read_report(bool* new_report, bool* tick);
+bool take_physical_key_down_activity();
 
 void interval_override_updated();
 
@@ -44,6 +45,7 @@ void inject_key_up(uint32_t usage);
 void inject_clear_keys();
 
 void set_monitor_enabled(bool enabled);
+void usb_device_unmounted_callback();
 void monitor_usage(uint32_t usage, int32_t value, uint8_t hub_port);
 
 void sof_callback();
