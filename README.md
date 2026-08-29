@@ -2,22 +2,6 @@
 
 _For user documentation please see the project's website at [remapper.org](https://www.remapper.org/)._
 
-## Jarvis Feather nightly
-
-Jarvis uses the Pico SDK `remapper` target for `PICO_BOARD=feather_host`, based
-on stable source commit `cb0697468050e67e184e0df644d995f9aab2923e`. The
-nightly keeps physical keyboard pass-through and feature-report injection, and
-adds only Jarvis shortcut detection to the existing stable monitor path.
-
-`firmware_nightly_shortcut.uf2` is built after restoring the complete
-`firmware` tree from stable commit `cb0697468050e67e184e0df644d995f9aab2923e`.
-Its only source difference from that tree is shortcut detection in
-`firmware/src/remapper.cc`. The existing stable monitor emits `FFFA:0001` for
-`Pause` or `Tab+Up`, `FFFA:0002` for `Tab+Down`, and reserved `FFFA:0003` and
-`FFFA:0004` for `Tab+Left` and `Tab+Right`. The physical keyboard report and
-pass-through path are not modified. The failed NeoPixel, command 29 and monitor
-key-up experiments are not included.
-
 This is a configurable USB dongle that allows you to remap inputs from mice, keyboards and other devices. It works completely in hardware and requires no software running on the computer during normal use.
 
 It can do things like reassign buttons, change keyboard layouts, map mouse buttons to keyboard inputs, map keystrokes to mouse inputs, change mouse sensitivity (permanently or when a button is held), rotate mouse axes by arbitrary (non-90 degree) angles, drag-lock for mouse buttons, scroll by moving the mouse, and much more.

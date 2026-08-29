@@ -114,22 +114,6 @@ uint8_t monitor_usages_queued = 0;
 monitor_report_t monitor_report[2] = { { .report_id = REPORT_ID_MONITOR }, { .report_id = REPORT_ID_MONITOR } };
 uint8_t monitor_report_idx = 0;
 
-// Jarvis shortcut usages deliberately use 0xFFFA.  Stable already reserves
-// 0xFFF9 for DPAD usages, so reusing 0xFFF9 would make ordinary DPAD reports
-// look like Jarvis commands.
-const uint32_t JARVIS_SHORTCUT_USAGE_PAGE = 0xFFFA0000;
-const uint32_t JARVIS_SHORTCUT_USAGES[] = {
-    0x0007002B,  // Tab
-    0x00070048,  // Pause
-    0x00070052,  // Up
-    0x00070051,  // Down
-    0x00070050,  // Left
-    0x0007004F,  // Right
-};
-uint32_t jarvis_shortcut_key_state[6] = { 0 };
-bool jarvis_pause_latched = false;
-bool jarvis_arrow_latched[4] = { false, false, false, false };
-
 #define NREGISTERS 32
 int32_t registers[NREGISTERS] = { 0 };
 std::vector<register_ptrs_t> register_ptrs;
@@ -1540,88 +1524,6 @@ void monitor_usage(uint32_t usage, int32_t value, uint8_t hub_port) {
     };
 }
 
-void reset_jarvis_shortcuts() {
-    memset(jarvis_shortcut_key_state, 0, sizeof(jarvis_shortcut_key_state));
-    jarvis_pause_latched = false;
-    memset(jarvis_arrow_latched, 0, sizeof(jarvis_arrow_latched));
-}
-
-bool read_jarvis_shortcut_usage(
-    const uint8_t* report,
-    int len,
-    uint32_t target_usage,
-    const std::unordered_map<uint32_t, usage_def_t>& usage_defs,
-    bool& represented) {
-    represented = false;
-    for (auto const& [source_usage, usage_def] : usage_defs) {
-        if (usage_def.usage_maximum != 0) {
-            if ((target_usage < source_usage) || (target_usage > usage_def.usage_maximum)) {
-                continue;
-            }
-            represented = true;
-            for (unsigned int i = 0; i < usage_def.count; i++) {
-                uint32_t bits = get_bits(report, len, usage_def.bitpos + i * usage_def.size, usage_def.size);
-                if ((bits >= usage_def.logical_minimum) &&
-                    (bits <= usage_def.logical_minimum + usage_def.usage_maximum - source_usage) &&
-                    (source_usage + bits - usage_def.logical_minimum == target_usage)) {
-                    return true;
-                }
-            }
-        } else if (source_usage == target_usage) {
-            represented = true;
-            if (usage_def.is_array) {
-                for (unsigned int i = 0; i < usage_def.count; i++) {
-                    uint32_t bits = get_bits(report, len, usage_def.bitpos + i * usage_def.size, usage_def.size);
-                    if (((usage_def.index_mask == 0) && (bits == usage_def.index)) ||
-                        (usage_def.index_mask & (1 << bits))) {
-                        return true;
-                    }
-                }
-            } else {
-                return get_bits(report, len, usage_def.bitpos, usage_def.size) != 0;
-            }
-        }
-    }
-    return false;
-}
-
-void update_jarvis_shortcuts(
-    const uint8_t* report,
-    int len,
-    uint8_t interface_idx,
-    uint8_t hub_port,
-    const std::unordered_map<uint32_t, usage_def_t>& usage_defs) {
-    uint32_t interface_mask = (uint32_t) 1 << interface_idx;
-    for (unsigned int i = 0; i < sizeof(JARVIS_SHORTCUT_USAGES) / sizeof(JARVIS_SHORTCUT_USAGES[0]); i++) {
-        bool represented = false;
-        bool down = read_jarvis_shortcut_usage(report, len, JARVIS_SHORTCUT_USAGES[i], usage_defs, represented);
-        if (!represented) {
-            continue;
-        }
-        if (down) {
-            jarvis_shortcut_key_state[i] |= interface_mask;
-        } else {
-            jarvis_shortcut_key_state[i] &= ~interface_mask;
-        }
-    }
-
-    bool pause = jarvis_shortcut_key_state[1] != 0;
-    if (pause && !jarvis_pause_latched) {
-        monitor_usage(JARVIS_SHORTCUT_USAGE_PAGE | 1, 1, hub_port);
-    }
-    jarvis_pause_latched = pause;
-
-    bool tab = jarvis_shortcut_key_state[0] != 0;
-    const unsigned int arrow_indexes[4] = { 2, 3, 4, 5 };
-    for (unsigned int i = 0; i < 4; i++) {
-        bool chord_down = tab && (jarvis_shortcut_key_state[arrow_indexes[i]] != 0);
-        if (chord_down && !jarvis_arrow_latched[i]) {
-            monitor_usage(JARVIS_SHORTCUT_USAGE_PAGE | (i + 1), 1, hub_port);
-        }
-        jarvis_arrow_latched[i] = chord_down;
-    }
-}
-
 inline void read_input(const uint8_t* report, int len, uint32_t source_usage, const usage_def_t& their_usage, uint8_t interface_idx) {
     int32_t value = 0;
     if (their_usage.is_array) {
@@ -1819,14 +1721,6 @@ void do_handle_received_report(const uint8_t* report, int len, uint16_t interfac
     }
 
     if (monitor_enabled) {
-        // Shortcut detection inspects only six fixed keyboard usages and does
-        // not alter the physical report, mapping state or pass-through path.
-        update_jarvis_shortcuts(
-            report,
-            len,
-            interface_idx,
-            hub_port,
-            their_usages[interface][report_id]);
         for (auto const& [their_usage, their_usage_def] : their_usages[interface][report_id]) {
             if (their_usage_def.usage_maximum == 0) {
                 monitor_read_input(report, len, their_usage, their_usage_def, interface_idx, hub_port);
@@ -2224,7 +2118,6 @@ void inject_clear_keys() {
 void set_monitor_enabled(bool enabled) {
     if (monitor_enabled != enabled) {
         monitor_input_state.clear();
-        reset_jarvis_shortcuts();
         monitor_enabled = enabled;
     }
 }
@@ -2240,7 +2133,6 @@ void device_disconnected_callback(uint8_t dev_addr) {
     if (our_descriptor->device_disconnected != nullptr) {
         our_descriptor->device_disconnected(dev_addr);
     }
-    reset_jarvis_shortcuts();
     clear_descriptor_data(dev_addr);
     uint8_t hub_port = hub_ports[dev_addr];
     if ((hub_port != 0) && (hub_port != HUB_PORT_NONE)) {
