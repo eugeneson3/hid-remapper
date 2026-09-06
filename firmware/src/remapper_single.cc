@@ -41,11 +41,63 @@ uint32_t get_gpio_valid_pins_mask() {
 
 static bool reports_received;
 
+struct hid_receive_state_t {
+    uint8_t dev_addr;
+    bool mounted;
+    bool rearm_pending;
+};
+
+static hid_receive_state_t hid_receive_states[CFG_TUH_HID];
+
+static void try_rearm_hid_receive(uint8_t instance) {
+    if (instance >= CFG_TUH_HID) {
+        return;
+    }
+
+    hid_receive_state_t& state = hid_receive_states[instance];
+    if (!state.mounted || !state.rearm_pending || (state.dev_addr == 0)) {
+        return;
+    }
+
+    if (!tuh_hid_mounted(state.dev_addr, instance)) {
+        state = {};
+        return;
+    }
+
+    if (tuh_hid_receive_ready(state.dev_addr, instance) &&
+        tuh_hid_receive_report(state.dev_addr, instance)) {
+        state.rearm_pending = false;
+    }
+}
+
+static void request_hid_receive(uint8_t dev_addr, uint8_t instance) {
+    if (instance >= CFG_TUH_HID) {
+        return;
+    }
+
+    hid_receive_state_t& state = hid_receive_states[instance];
+    if (!state.mounted || (state.dev_addr != dev_addr)) {
+        return;
+    }
+
+    state.rearm_pending = true;
+    try_rearm_hid_receive(instance);
+}
+
+static void retry_pending_hid_receives() {
+    for (uint8_t instance = 0; instance < CFG_TUH_HID; instance++) {
+        try_rearm_hid_receive(instance);
+    }
+}
+
 void read_report(bool* new_report, bool* tick) {
     *tick = get_and_clear_tick_pending();
 
     reports_received = false;
     tuh_task();
+    if (*tick) {
+        retry_pending_hid_receives();
+    }
     *new_report = reports_received;
 }
 
@@ -78,10 +130,20 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const* desc_re
 
     descriptor_received_callback(vid, pid, desc_report, desc_len, (uint16_t) (dev_addr << 8) | instance, hub_port, itf_num);
 
-    tuh_hid_receive_report(dev_addr, instance);
+    if (instance < CFG_TUH_HID) {
+        hid_receive_states[instance] = {
+            .dev_addr = dev_addr,
+            .mounted = true,
+            .rearm_pending = true,
+        };
+        try_rearm_hid_receive(instance);
+    }
 }
 
 void umount_callback(uint8_t dev_addr, uint8_t instance) {
+    if ((instance < CFG_TUH_HID) && (hid_receive_states[instance].dev_addr == dev_addr)) {
+        hid_receive_states[instance] = {};
+    }
     device_disconnected_callback(dev_addr);
 }
 
@@ -101,7 +163,7 @@ void report_received_callback(uint8_t dev_addr, uint8_t instance, uint8_t const*
 void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t const* report, uint16_t len) {
     report_received_callback(dev_addr, instance, report, len);
 
-    tuh_hid_receive_report(dev_addr, instance);
+    request_hid_receive(dev_addr, instance);
 }
 
 void tuh_midi_rx_cb(uint8_t dev_addr, uint32_t num_packets) {

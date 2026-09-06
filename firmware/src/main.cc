@@ -72,14 +72,28 @@ void __no_inline_not_in_flash_func(sof_handler)(uint32_t frame_count) {
 }
 
 bool do_send_report(uint8_t interface, const uint8_t* report_with_id, uint8_t len) {
-    if (tud_suspended() &&
-        (our_descriptor->should_cause_wakeup != nullptr) &&
-        our_descriptor->should_cause_wakeup(report_with_id[0], report_with_id + 1, len - 1)) {
-        tud_remote_wakeup();
-    } else {
-        tud_hid_n_report(interface, report_with_id[0], report_with_id + 1, len - 1);
+    if (tud_suspended()) {
+        // A remote-wakeup request is not the HID report itself. Keep the
+        // queued report until the bus has resumed and TinyUSB accepts it.
+        return false;
     }
-    return true;  // XXX?
+
+    return tud_hid_n_report(interface, report_with_id[0], report_with_id + 1, len - 1);
+}
+
+void maybe_wake_host() {
+    static bool wake_requested = false;
+    bool bus_suspended = tud_suspended();
+    // Consume the staging hint even while awake. Only scan queued reports
+    // while a wake request is possible, not on every active main-loop pass.
+    bool report_can_wake = take_report_wakeup_request(bus_suspended && !wake_requested);
+    if (!bus_suspended) {
+        wake_requested = false;
+    } else if (!wake_requested && report_can_wake) {
+        // TinyUSB does not latch this request for us. Do not retrigger the
+        // RP2040 resume signal while waiting for this suspend to end.
+        wake_requested = tud_remote_wakeup();
+    }
 }
 
 void gpio_pins_init() {
@@ -304,7 +318,8 @@ int main() {
             set_gpio_dir();
             set_gpio_dir_pending = false;
         }
-        if (tud_hid_n_ready(0) || tud_suspended()) {
+        maybe_wake_host();
+        if (tud_hid_n_ready(0)) {
             send_report(do_send_report);
         }
         if (monitor_enabled && tud_hid_n_ready(1)) {

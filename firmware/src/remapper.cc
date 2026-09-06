@@ -93,11 +93,12 @@ uint8_t* report_masks_relative[MAX_INPUT_REPORT_ID + 1];
 uint8_t* report_masks_absolute[MAX_INPUT_REPORT_ID + 1];
 uint16_t report_sizes[MAX_INPUT_REPORT_ID + 1];
 
-#define OR_BUFSIZE 8
+#define OR_BUFSIZE 16
 uint8_t outgoing_reports[OR_BUFSIZE][MAX_REPORT_SIZE + 1];
 uint8_t or_head = 0;
 uint8_t or_tail = 0;
 uint8_t or_items = 0;
+static bool report_wakeup_pending = false;
 
 std::vector<uint8_t> report_ids;
 
@@ -125,6 +126,7 @@ std::queue<macro_entry_t> macro_queue;
 uint32_t reports_received;
 uint32_t reports_sent;
 uint32_t processing_time;
+uint32_t output_queue_overflows;
 
 bool expression_valid[NEXPRESSIONS] = { false };
 
@@ -1720,21 +1722,27 @@ void process_mapping(bool auto_repeat) {
             our_descriptor->sanitize_report(report_id, reports[report_id], report_sizes[report_id]);
         }
         if (needs_to_be_sent(report_id)) {
-            if (or_items == OR_BUFSIZE) {
-                printf("overflow!\n");
-                break;
+            if ((our_descriptor->should_cause_wakeup != nullptr) &&
+                our_descriptor->should_cause_wakeup(report_id, reports[report_id], report_sizes[report_id])) {
+                // A full queue must not hide a new key-down from remote
+                // wakeup, even if the queued reports cannot wake the host.
+                report_wakeup_pending = true;
             }
             uint8_t prev = (or_tail + OR_BUFSIZE - 1) % OR_BUFSIZE;
             if ((or_items > 0) &&
                 (outgoing_reports[prev][0] == report_id) &&
                 !differ_on_absolute(outgoing_reports[prev] + 1, reports[report_id], report_id)) {
                 aggregate_relative(outgoing_reports[prev] + 1, reports[report_id], report_id);
-            } else {
+            } else if (or_items < OR_BUFSIZE) {
                 outgoing_reports[or_tail][0] = report_id;
                 memcpy(outgoing_reports[or_tail] + 1, reports[report_id], report_sizes[report_id]);
                 memcpy(prev_reports[report_id], reports[report_id], report_sizes[report_id]);
                 or_tail = (or_tail + 1) % OR_BUFSIZE;
                 or_items++;
+            } else {
+                // Keep the last-enqueued baseline unchanged so a persistent
+                // state is retried next tick. Always clear staging below.
+                output_queue_overflows++;
             }
         }
         if (our_descriptor->clear_report != nullptr) {
@@ -1756,6 +1764,29 @@ void process_mapping(bool auto_repeat) {
     processing_time += get_time() - now;
 }
 
+bool take_report_wakeup_request(bool inspect_reports) {
+    bool pending = report_wakeup_pending;
+    report_wakeup_pending = false;
+    if (!inspect_reports || suspended ||
+        (our_descriptor != &our_descriptors[our_descriptor_number]) ||
+        (our_descriptor->should_cause_wakeup == nullptr)) {
+        return false;
+    }
+    if (pending) {
+        return true;
+    }
+    // A key-up or buttonless mouse report at the head must not prevent a
+    // later key-down from waking the host. Inspection never dequeues data.
+    for (uint8_t offset = 0; offset < or_items; offset++) {
+        uint8_t slot = (or_head + offset) % OR_BUFSIZE;
+        uint8_t report_id = outgoing_reports[slot][0];
+        if (our_descriptor->should_cause_wakeup(report_id, outgoing_reports[slot] + 1, report_sizes[report_id])) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool send_report(send_report_t do_send_report) {
     if (suspended || (or_items == 0)) {
         return false;
@@ -1763,18 +1794,24 @@ bool send_report(send_report_t do_send_report) {
 
     uint8_t report_id = outgoing_reports[or_head][0];
 
-    bool sent = false;
-    if (our_descriptor == &our_descriptors[our_descriptor_number]) {
-        sent = do_send_report(0, outgoing_reports[or_head], report_sizes[report_id] + 1);
+    if (our_descriptor != &our_descriptors[our_descriptor_number]) {
+        // A descriptor change invalidates reports encoded with the old
+        // layout. This is intentional discard, not a transient USB failure.
+        or_head = (or_head + 1) % OR_BUFSIZE;
+        or_items--;
+        return false;
     }
 
-    // XXX even if not sent?
+    if (!do_send_report(0, outgoing_reports[or_head], report_sizes[report_id] + 1)) {
+        return false;
+    }
+
     or_head = (or_head + 1) % OR_BUFSIZE;
     or_items--;
 
     reports_sent++;
 
-    return sent;
+    return true;
 }
 
 static bool send_shortcut_monitor_report(send_report_t do_send_report) {
@@ -2438,6 +2475,7 @@ void update_their_descriptor_derivates() {
 }
 
 void parse_our_descriptor() {
+    report_wakeup_pending = false;
     std::unordered_map<uint8_t, std::unordered_map<uint32_t, usage_def_t>> our_feature_usages;
 
     our_usages.clear();
@@ -2521,6 +2559,10 @@ void parse_our_descriptor() {
 
 void print_stats() {
     printf("%lu %lu %lu\n", reports_received, reports_sent, processing_time);
+    if (output_queue_overflows != 0) {
+        printf("output queue deferred: %lu\n", output_queue_overflows);
+        output_queue_overflows = 0;
+    }
     reports_received = 0;
     reports_sent = 0;
     processing_time = 0;

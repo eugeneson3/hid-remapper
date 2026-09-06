@@ -28,13 +28,34 @@ Build the current candidate without the boot-time LED self-test:
 
 ```sh
 cd firmware
-PICO_BOARD=feather_host cmake -S . -B build-stage-d2-auto-state-wsl-20260829 \
+PICO_BOARD=feather_host cmake -S . -B build-nightly-v2-20260830 \
   -DCMAKE_BUILD_TYPE=Release \
   -DJARVIS_D13_LED_SELF_TEST=OFF
-cmake --build build-stage-d2-auto-state-wsl-20260829 --target remapper --parallel 4
+cmake --build build-nightly-v2-20260830 --target remapper --parallel 4
 ```
 
-The recorded candidate artifact is `build-stage-d2-auto-state-wsl-20260829/remapper_stage_d2_auto_state.uf2`, 364,544 bytes, SHA-256 `0832AF829214739A36A59F5347FEB05D621FB6CADA3DBA329181C47C8F769AD1`. Do not copy it over the Jarvis stable artifact without an explicit promotion decision and complete hardware validation.
+### nightly_v2: HID delivery reliability
+
+The 2026-08-30 v2 candidate keeps the current shortcut and D13 contracts while independently improving the stable-baseline delivery paths:
+
+- a failed TinyUSB HID submission retains the queue head and its DOWN/UP ordering;
+- remote wakeup requests do not count as report delivery; all queued reports and newly staged input can request wakeup, so a non-waking head or a full queue cannot hide a key-down;
+- an accepted remote-wakeup request is latched once per suspend interval, and the report queue remains intact until actual submission;
+- the output queue has 16 entries, and queue saturation never skips clearing a staging report;
+- failed physical-HID receive registration is retried in main context on the next 1 ms tick, with per-interface state cleared on unmount;
+- intentional discard after a descriptor change remains separate from transient submission failure.
+
+`prev_reports` remains the last-enqueued baseline so retries do not repeatedly enqueue the same absolute state. Submission success is not a PC-level ACK, and a finite queue cannot preserve unlimited transitions during a prolonged USB outage. This v2 does not add keyboard-unplug held-key release, PIO recovery, VBUS cycling, or a watchdog. The companion Jarvis change serializes lease refresh with DOWN/UP/CLEAR to prevent a stale refresh DOWN after release.
+
+Run the native mock-USB regression harness from the repository root:
+
+```sh
+python3 tests/test_hid_reliability.py
+```
+
+The artifact is `firmware/build-nightly-v2-20260830/remapper.uf2`, copied separately to Jarvis as `firmware/firmware_nightly_v2.uf2`: 366,592 bytes, SHA-256 `0D195E8BF4FCE259E1D363D9CCA28B1951AAF64490D7FA46CF7C3CF2FE470D51`. It was built with WSL Ubuntu 22.04, ARM GCC 10.3.1, Release, and LED self-test OFF. Its source is the `4adca8c` working tree plus the uncommitted reliability changes; the parent firmware tree of `4adca8c` is byte-identical to `cb069746...`. No previous hardening patch was copied.
+
+The prior Jarvis nightly remains 364,544 bytes with SHA-256 `D582AB0699B8066AB98D8D892D4C320B7E0FCD958B53007B7A4CACFB12186E80`. Neither that file nor `firmware_stable.uf2` is overwritten. Hardware validation of physical pass-through, injected hold/release, merged keys, shortcuts, LED behavior, and 10,000 input transitions is still required before promotion.
 
 Wireless receivers are supported and multiple devices can be connected at the same time using a USB hub (with different mappings for each device if desired).
 
