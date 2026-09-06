@@ -3,7 +3,7 @@ on:
   push:
     paths:
       - 'firmware/**'
-      - 'tests/test_hid_reliability.py'
+      - 'tests/**'
       - '.github/workflows/build-rp2040.yml'
   workflow_dispatch:
   workflow_call:
@@ -22,7 +22,10 @@ jobs:
           sudo apt update
           sudo apt install -y --no-install-recommends g++ gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib srecord
       - name: Test HID delivery and receive re-arm contracts
-        run: python3 tests/test_hid_reliability.py
+        run: |
+          python3 tests/test_v2_transport.py
+          python3 tests/test_hid_reliability.py
+          python3 tests/test_v3_mapping.py
       - name: Build
         run: |
           mkdir build

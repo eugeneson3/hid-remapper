@@ -30,6 +30,7 @@ void interval_override_updated();
 
 void parse_our_descriptor();
 void process_mapping(bool auto_repeat);
+void process_input_transition();
 void update_their_descriptor_derivates();
 bool take_report_wakeup_request(bool inspect_reports);
 bool send_report(send_report_t do_send_report);

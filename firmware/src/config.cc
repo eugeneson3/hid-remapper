@@ -1119,18 +1119,18 @@ void handle_set_report1(uint8_t report_id, uint8_t const* buffer, uint16_t bufsi
                 case ConfigCommand::INJECT_KEY_DOWN: {
                     inject_key_t* key = (inject_key_t*) config_buffer->data;
                     inject_key_down(key->usage, key->ttl_ms);
-                    set_tick_pending();
+                    process_input_transition();
                     break;
                 }
                 case ConfigCommand::INJECT_KEY_UP: {
                     inject_key_t* key = (inject_key_t*) config_buffer->data;
                     inject_key_up(key->usage);
-                    set_tick_pending();
+                    process_input_transition();
                     break;
                 }
                 case ConfigCommand::INJECT_CLEAR_KEYS:
                     inject_clear_keys();
-                    set_tick_pending();
+                    process_input_transition();
                     break;
                 case ConfigCommand::SET_AUTO_ATTACK_STATE: {
                     auto_attack_state_t* state = (auto_attack_state_t*) config_buffer->data;

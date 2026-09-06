@@ -1,0 +1,12 @@
+{
+  "firmware/src/main.cc": "7b36a6da86a2ec97713c03ba274493bfed31b61df761f7d0e62645ea1b34e9dd",
+  "firmware/src/remapper_single.cc": "74df7476bb0f7f82e0998e3bcb0342eec0f2def12d4e30c47dfa1869f2f106e7",
+  "firmware/src/tinyusb_stuff.cc": "1191ccfb2175dd6ea170630b6a766c3b7baf952b8466494b337781e56087476e",
+  "firmware/src/activity_led.cc": "1d69f70e3304ef1bc15c5962719eeb8f34925c4369c1c3de8a3e30572dd499c4",
+  "firmware/src/activity_led.h": "175cd18c22880398c20bf3e4ef2d4a221c58cd3905ac22a7a4ca7141081480d2",
+  "firmware/src/boards/feather_host.h": "225b1bf7f83f2f476abb9998a80f57a9f3aef9862a8840a43e586ba92c48c490",
+  "firmware/src/tusb_config_both/tusb_config.h": "59f0ca64662c64e35faffc4584bafbb6ddbcf75c375d6ecc8eea62a7d63372a2",
+  "firmware/tinyusb/src/class/hid/hid_host.c": "da271b9e44efc9b551e9d05f9bbfe0385ecde258e4579aa298a5c7dca3438550",
+  "firmware/tinyusb/src/class/hid/hid_device.c": "cd292707f6e23d2e8660d304c8583a05a0951f7420a5bf3d396d8f701f7489f2",
+  "firmware/Pico-PIO-USB/src/pio_usb_host.c": "00f14fde6cb6a335d2d12ecf7d64da2100fa7ead1f6fdd4628f8d2bc8230af94"
+}

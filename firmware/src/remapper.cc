@@ -1445,7 +1445,9 @@ void process_mapping(bool auto_repeat) {
 
     uint64_t now = get_time();
     expire_injected_usages(now);
-    frame_counter++;
+    if (auto_repeat) {
+        frame_counter++;
+    }
 
     for (auto& tap_hold : tap_hold_usages) {
         if ((*tap_hold.input_state != 0) && (*(tap_hold.input_state + PREV_STATE_OFFSET) == 0)) {
@@ -1677,10 +1679,10 @@ void process_mapping(bool auto_repeat) {
         for (uint32_t usage : macro_queue.front().items) {
             apply_usage_to_reports(usage);
         }
-        if (macro_queue.front().duration_left > 0) {
-            macro_queue.front().duration_left--;
-        } else {
-            if (or_items == 0) {
+        if (auto_repeat) {
+            if (macro_queue.front().duration_left > 0) {
+                macro_queue.front().duration_left--;
+            } else if (or_items == 0) {
                 macro_queue.pop();
             }
         }
@@ -1702,7 +1704,7 @@ void process_mapping(bool auto_repeat) {
             continue;
         }
         usage_def_t& our_usage = our_usages_flat[usage];
-        // XXX I don't think this is necessary now that we only do process_mapping once per frame (existing_val is always zero)
+        // Include values staged by this mapping pass.
         int32_t existing_val = get_bits((uint8_t*) reports[our_usage.report_id], report_sizes[our_usage.report_id], our_usage.bitpos, our_usage.size);
         if (our_usage.logical_minimum < 0) {
             if (existing_val & (1 << (our_usage.size - 1))) {
@@ -1924,7 +1926,15 @@ inline void read_input(const uint8_t* report, int len, uint32_t source_usage, co
             }
         }
         if (their_usage.input_state_n != NULL) {
-            *(their_usage.input_state_n) = scaled_value;
+            if ((their_usage.size == 1) || their_usage.is_array) {
+                if (value) {
+                    *(their_usage.input_state_n) |= 1u << interface_idx;
+                } else {
+                    *(their_usage.input_state_n) &= ~(1u << interface_idx);
+                }
+            } else {
+                *(their_usage.input_state_n) = scaled_value;
+            }
         }
     }
 }
@@ -1944,7 +1954,7 @@ inline void read_input_range(const uint8_t* report, int len, uint32_t source_usa
             if (hub_port != HUB_PORT_NONE) {
                 int32_t* state_ptr_n = get_state_ptr(actual_usage, hub_port);
                 if (state_ptr_n != NULL) {
-                    *state_ptr_n = 1 << interface_idx;  // set the bit because in do_handle_received_report we clear it not knowing if it's "0" or "n"
+                    *state_ptr_n |= 1u << interface_idx;
                 }
             }
         }
@@ -2010,9 +2020,28 @@ inline void monitor_read_input_range(const uint8_t* report, int len, uint32_t so
     }
 }
 
+static void prepare_input_mapping() {
+    if (their_descriptor_updated) {
+        update_their_descriptor_derivates();
+        their_descriptor_updated = false;
+    }
+}
+
+void process_input_transition() {
+    prepare_input_mapping();
+    // Queue each state before another report/command can overwrite it.
+    // Only the main-loop 1ms tick advances frame/macro time.
+    process_mapping(false);
+}
+
 void handle_received_report(const uint8_t* report, int len, uint16_t interface, uint8_t external_report_id) {
+    if ((report == nullptr) || (len <= 0) || !interface_index.count(interface)) {
+        return;
+    }
+    prepare_input_mapping();
     if (our_descriptor->handle_received_report != nullptr) {
         our_descriptor->handle_received_report(report, len, interface, external_report_id);
+        process_mapping(false);
     }
 }
 
@@ -2549,7 +2578,12 @@ void parse_our_descriptor() {
                     .usage_def = usage_def,
                 });
                 our_usage_ranges_set.insert(((uint64_t) usage << 32) | usage_def.usage_maximum);
-                put_bits(report_masks_absolute[report_id], report_sizes[report_id], usage_def.bitpos, usage_def.size * usage_def.count, 0xFFFFFFFF);
+                // Each array element fits in the 32-bit value; the full boot
+                // keyboard array is 48 bits and cannot be shifted as one value.
+                for (unsigned int i = 0; i < usage_def.count; i++) {
+                    put_bits(report_masks_absolute[report_id], report_sizes[report_id],
+                             usage_def.bitpos + i * usage_def.size, usage_def.size, 0xFFFFFFFF);
+                }
             }
         }
     }
@@ -2653,6 +2687,43 @@ void device_connected_callback(uint16_t interface, uint16_t vid, uint16_t pid, u
 }
 
 void device_disconnected_callback(uint8_t dev_addr) {
+    prepare_input_mapping();
+    // Remove only this device's ownership, before descriptor/index deletion.
+    // Port-specific keyboard state uses the same interface bits as global state.
+    bool had_input = false;
+    for (auto const& [interface, index] : interface_index) {
+        if ((interface >> 8) != dev_addr) {
+            continue;
+        }
+        had_input = true;
+        const uint32_t keep = ~(1u << index);
+        for (auto const& [report_id, states] : array_range_usages[interface]) {
+            for (int32_t* state : states) {
+                *state &= keep;
+            }
+        }
+        for (auto const& [report_id, usages] : their_used_usages[interface]) {
+            for (auto const& usage : usages) {
+                const auto& def = usage.usage_def;
+                if (def.usage_maximum != 0) {
+                    continue; // array ranges were cleared above
+                }
+                for (int32_t* state : {def.input_state_0, def.input_state_n}) {
+                    if (state != nullptr) {
+                        if (!def.is_relative && ((def.size == 1) || def.is_array)) {
+                            *state &= keep;
+                        } else {
+                            *state = 0;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if (had_input) {
+        // Still-valid output descriptor pointers are required by mapping here.
+        process_mapping(false);
+    }
     for (auto& state : shortcut_report_states) {
         if (state.active && ((state.interface >> 8) == dev_addr)) {
             state.active = false;

@@ -3,85 +3,34 @@ on:
   push:
     paths:
       - 'firmware/**'
+      - 'tests/**'
       - '.github/workflows/build-feather.yml'
   workflow_dispatch:
-defaults:
-  run:
-    shell: bash --noprofile --norc -x -e -o pipefail {0}
 jobs:
   build:
     runs-on: ubuntu-22.04
+    env:
+      SOURCE_DATE_EPOCH: '1788652800'
     steps:
       - uses: actions/checkout@v6
-      - name: Install QMK build dependencies
+        with:
+          submodules: true
+      - name: Install ARM and host compilers
         run: |
-          sudo apt update
-          sudo apt install -y --no-install-recommends \
-            binutils-arm-none-eabi \
-            gcc-arm-none-eabi \
-            git \
-            libnewlib-arm-none-eabi \
-            libstdc++-arm-none-eabi-newlib \
-            python3-pip
-      - name: Check out pinned QMK and converter sources
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake g++ gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib
+      - name: Verify v2 transport and v3 mapping
         run: |
-          git clone --branch 0.24.0 --depth 1 --recurse-submodules --shallow-submodules \
-            https://github.com/qmk/qmk_firmware.git qmk_firmware
-          test "$(git -C qmk_firmware rev-parse HEAD)" = "4e369d405af6bba1adce6337b2e1b1ea1788566c"
-
-          git clone --depth 1 \
-            https://github.com/whyaaronbailey/adafruit_rp2040_usbh.git \
-            qmk_firmware/keyboards/converter/adafruit_rp2040_usbh
-          git -C qmk_firmware/keyboards/converter/adafruit_rp2040_usbh fetch --depth 1 origin \
-            8df86fe375d7055df618399f0d2f2f34dc2fc3a0
-          git -C qmk_firmware/keyboards/converter/adafruit_rp2040_usbh checkout \
-            8df86fe375d7055df618399f0d2f2f34dc2fc3a0
-          git -C qmk_firmware/keyboards/converter/adafruit_rp2040_usbh submodule update \
-            --init --recursive --depth 1
-          test "$(git -C qmk_firmware/keyboards/converter/adafruit_rp2040_usbh rev-parse HEAD)" = \
-            "8df86fe375d7055df618399f0d2f2f34dc2fc3a0"
-          pio_usb=qmk_firmware/keyboards/converter/adafruit_rp2040_usbh/lib/Pico-PIO-USB
-          git -C "$pio_usb" fetch --depth 1 origin \
-            447ea437fde9ba050281f3827ea4b41921833a90
-          git -C "$pio_usb" checkout 447ea437fde9ba050281f3827ea4b41921833a90
-          test "$(git -C "$pio_usb" rev-parse HEAD)" = \
-            "447ea437fde9ba050281f3827ea4b41921833a90"
-          git -C "$pio_usb" apply --unidiff-zero \
-            "$GITHUB_WORKSPACE/firmware/qmk_passthrough/pico_pio_usb_disconnect.patch"
-      - name: Apply Jarvis minimal baseline overlay
+          python3 tests/test_v2_transport.py
+          python3 tests/test_hid_reliability.py
+          python3 tests/test_v3_mapping.py
+      - name: Build Feather v3
         run: |
-          converter=qmk_firmware/keyboards/converter/adafruit_rp2040_usbh
-          git -C "$converter" apply --unidiff-zero \
-            "$GITHUB_WORKSPACE/firmware/qmk_passthrough/diagnostics.patch"
-          cp firmware/qmk_passthrough/jarvis_diagnostics.c "$converter/"
-          cp firmware/qmk_passthrough/jarvis_diagnostics.h "$converter/"
-          sed -i \
-            -e 's/"keyboard_name": "Rp2040 USB Host"/"keyboard_name": "Jarvis QMK Passthrough"/' \
-            -e 's/"vid": "0x239A"/"vid": "0x046D"/' \
-            -e 's/"pid": "0x0001"/"pid": "0xC52B"/' \
-            -e 's/"console": true/"console": false/' \
-            -e 's/"mousekey": true/"mousekey": false/' \
-            -e 's/"virtser": true/"virtser": false/' \
-            "$converter/info.json"
-          grep -F '"keyboard_name": "Jarvis QMK Passthrough"' "$converter/info.json"
-          grep -F '"vid": "0x046D"' "$converter/info.json"
-          grep -F '"pid": "0xC52B"' "$converter/info.json"
-          cp -R "$converter/keymaps/default" "$converter/keymaps/jarvis_baseline"
-          sed -i 's/^\[0\] = LAYOUT(/[0] = LAYOUT_fullsize_ansi(/' \
-            "$converter/keymaps/jarvis_baseline/keymap.c"
-          grep -F '[0] = LAYOUT_fullsize_ansi(' \
-            "$converter/keymaps/jarvis_baseline/keymap.c"
-          cp firmware/qmk_passthrough/rules.mk "$converter/keymaps/jarvis_baseline/rules.mk"
-      - name: Build Jarvis QMK passthrough firmware
-        run: |
-          python3 -m pip install --disable-pip-version-check \
-            qmk==1.1.2 milc==1.6.6 -r qmk_firmware/requirements.txt
-          export PATH="$HOME/.local/bin:$PATH"
-          make -C qmk_firmware converter/adafruit_rp2040_usbh:jarvis_baseline:uf2
+          cmake -S firmware -B build-v3 -DPICO_BOARD=feather_host -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-v3 --target remapper -j2
           mkdir artifacts
-          cp qmk_firmware/.build/converter_adafruit_rp2040_usbh_jarvis_baseline.uf2 \
-            artifacts/firmware_qmk_passthrough.uf2
+          cp build-v3/remapper.uf2 artifacts/firmware_nightly_v3.uf2
       - uses: actions/upload-artifact@v7
         with:
-          name: jarvis-qmk-passthrough
-          path: artifacts/firmware_qmk_passthrough.uf2
+          name: feather-nightly-v3
+          path: artifacts/firmware_nightly_v3.uf2

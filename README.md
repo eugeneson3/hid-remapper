@@ -1,3 +1,32 @@
+# Jarvis Feather nightly v3 — 2026-09-06
+
+This recovery candidate starts from the exact nightly_v2 source (4adca8c plus
+its preserved local reliability changes), at snapshot c3d469b. The prior
+stable-derived September 6 nightly failed physical keyboard passthrough on the
+user's board. Do not use that candidate as the v3 source.
+
+V3 preserves v2's USB/PIO initialization, immediate receive re-arm, 1ms retry,
+16-entry output FIFO, successful-submission dequeue and status LED code. It
+adds per-report/per-command mapping to preserve fast DOWN/UP transitions and
+clears only a removed USB-A keyboard's ownership before deleting descriptors.
+Other keyboards and Jarvis injection remain merged. Frame/macro time advances
+only on the normal tick. Boot keyboard array masks avoid shifts over 31 bits.
+USB identifiers, configuration v18 and commands 22/26/27/28/30 are unchanged.
+
+Run `python3 tests/test_v2_transport.py`, `python3 tests/test_hid_reliability.py`
+and `python3 tests/test_v3_mapping.py`. Build `firmware` with
+`PICO_BOARD=feather_host`, Release, target `remapper`. `build-feather.yml` builds
+this Pico SDK candidate. USB/LED source identity, 19 v2 transport cases and the
+actual parser/mapping engine are checked, including 10,000 taps and 100 reconnects.
+
+Host tests mock board/USB I/O. Physical passthrough, enumeration, sleep/wake,
+held-key USB-A removal, reinsertion, simultaneous injection and long runs still
+need board validation. Queue saturation cannot preserve an unlimited stream;
+v2's next-tick final-state retry remains. No physical-key TTL or watchdog/VBUS
+reset was added. Stable and v2 UF2 images must remain unchanged.
+
+---
+
 # HID Remapper
 
 _For user documentation please see the project's website at [remapper.org](https://www.remapper.org/)._
