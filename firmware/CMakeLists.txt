@@ -11,6 +11,12 @@ set(PICO_TINYUSB_PATH "${CMAKE_CURRENT_LIST_DIR}/tinyusb")
 set(PICO_PIO_USB_PATH "${CMAKE_CURRENT_LIST_DIR}/Pico-PIO-USB")
 set(PICO_BOARD_HEADER_DIRS "${CMAKE_CURRENT_LIST_DIR}/src/boards")
 
+file(READ "${PICO_TINYUSB_PATH}/src/class/hid/hid_host.c" JARVIS_HID_HOST_SOURCE)
+string(FIND "${JARVIS_HID_HOST_SOURCE}" "result == XFER_RESULT_SUCCESS ? (uint16_t) xferred_bytes : 0" JARVIS_HID_ERROR_GUARD)
+if(JARVIS_HID_ERROR_GUARD EQUAL -1)
+    message(FATAL_ERROR "Run python3 tools/patch-tinyusb.py before configuring this nightly")
+endif()
+
 include(pico_sdk_import.cmake)
 
 project(remapper)
@@ -66,6 +72,7 @@ target_link_libraries(remapper
     hardware_pio
     hardware_dma
     hardware_flash
+    hardware_pwm
     $<$<STREQUAL:${PICO_BOARD},remapper_v8>:hardware_adc>
     tinyusb_device
     tinyusb_host
@@ -116,6 +123,7 @@ target_include_directories(remapper_dual_a PRIVATE
 target_link_libraries(remapper_dual_a
     pico_stdlib
     hardware_flash
+    hardware_pwm
     $<$<STREQUAL:${PICO_BOARD},remapper_v7>:hardware_i2c>
     hardware_pio
     tinyusb_device
@@ -179,6 +187,7 @@ target_link_libraries(remapper_serial
     pico_stdlib
     pico_unique_id
     hardware_flash
+    hardware_pwm
     tinyusb_device
     tinyusb_board
 )

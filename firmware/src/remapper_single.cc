@@ -7,6 +7,8 @@
 #include "pico/time.h"
 
 #include "descriptor_parser.h"
+#include "globals.h"
+#include "hid_receive_retry.h"
 #include "out_report.h"
 #include "remapper.h"
 #include "tick.h"
@@ -24,7 +26,6 @@ void extra_init() {
     pio_cfg.pin_dp = PICO_DEFAULT_PIO_USB_DP_PIN;
     pio_cfg.skip_alarm_pool = true;
     tuh_configure(BOARD_TUH_RHPORT, TUH_CFGID_RPI_PIO_USB_CONFIGURATION, &pio_cfg);
-    add_repeating_timer_us(-1000, manual_sof, NULL, &sof_timer);
 }
 
 uint32_t get_gpio_valid_pins_mask() {
@@ -40,12 +41,25 @@ uint32_t get_gpio_valid_pins_mask() {
 }
 
 static bool reports_received;
+static HidReceiveRetry<CFG_TUH_HID> receive_retry;
+
+static void retry_receives() {
+    if (input_queue_has_room()) {
+        receive_retry.retry([](uint8_t address, uint8_t instance) {
+            return tuh_hid_receive_report(address, instance);
+        });
+    }
+}
 
 void read_report(bool* new_report, bool* tick) {
+    // The host controller must be initialized before the first PIO SOF IRQ.
+    static bool timer_started = false;
+    if (!timer_started) timer_started = add_repeating_timer_us(-1000, manual_sof, NULL, &sof_timer);
     *tick = get_and_clear_tick_pending();
 
     reports_received = false;
     tuh_task();
+    if (*tick) retry_receives();
     *new_report = reports_received;
 }
 
@@ -78,10 +92,12 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const* desc_re
 
     descriptor_received_callback(vid, pid, desc_report, desc_len, (uint16_t) (dev_addr << 8) | instance, hub_port, itf_num);
 
-    tuh_hid_receive_report(dev_addr, instance);
+    receive_retry.mount(dev_addr, instance);
+    retry_receives();
 }
 
 void umount_callback(uint8_t dev_addr, uint8_t instance) {
+    receive_retry.unmount(dev_addr);
     device_disconnected_callback(dev_addr);
 }
 
@@ -101,7 +117,9 @@ void report_received_callback(uint8_t dev_addr, uint8_t instance, uint8_t const*
 void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t const* report, uint16_t len) {
     report_received_callback(dev_addr, instance, report, len);
 
-    tuh_hid_receive_report(dev_addr, instance);
+    // Re-arm only from the next main-context tick. This bounds tuh_task()
+    // even with a busy 1 kHz keyboard and retries transient submit failures.
+    receive_retry.received(dev_addr, instance);
 }
 
 void tuh_midi_rx_cb(uint8_t dev_addr, uint32_t num_packets) {

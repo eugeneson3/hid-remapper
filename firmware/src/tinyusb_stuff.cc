@@ -26,6 +26,7 @@
 
 #include <tusb.h>
 
+#include "activity_led.h"
 #include "config.h"
 #include "globals.h"
 #include "our_descriptor.h"
@@ -219,7 +220,16 @@ void tud_hid_set_protocol_cb(uint8_t instance, uint8_t protocol) {
     boot_protocol_updated = true;
 }
 
+void tud_umount_cb() {
+    activity_led_set_auto_attack(false, 0);
+    inject_clear_keys();
+    reset_usb_delivery();
+    reset_output_reports();
+}
+
 void tud_mount_cb() {
+    reset_usb_delivery();
+    reset_output_reports();
     reset_resolution_multiplier();
     if (boot_protocol_keyboard) {
         boot_protocol_keyboard = false;

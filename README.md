@@ -1,5 +1,56 @@
 # HID Remapper
 
+## Jarvis Feather nightly, 2026-09-06
+
+This candidate starts directly at `cb0697468050e67e184e0df644d995f9aab2923e`.
+It does not reuse the previous nightly/QMK experiments. Board: `feather_host`;
+target: `remapper`. USB identity `046D:C52B`, config version 18 and commands
+22/26/27/28 are retained. Command 30 carries `running:uint8, ttl_ms:uint16 LE`.
+The Jarvis stable and nightly_v2 images are not promoted or replaced.
+
+- Snapshot each physical report and injection command before the next event,
+  including DOWN/UP arriving within one USB task. Tick-based macros keep their
+  original 1ms duration accounting.
+- Hold the 128-entry output FIFO head until TinyUSB's transfer-complete callback.
+  Retry rejected submissions and failed completions. Remote wakeup is separate
+  from delivery; check all queued/deferred reports and issue one accepted request
+  per suspend interval. Monitor buffers are immutable while in flight.
+- Retry HID receive submission in the main 1ms tick; cancel retries on detach
+  and start PIO SOF only after host initialization. Apply the hash-checked TinyUSB
+  patch so failed transfers cannot replay stale receive bytes.
+- On keyboard USB-A detach, clear the departing interface ownership before
+  freeing its index, then immediately queue the merged release. Other keyboards
+  and injected keys remain held. Late callbacks are ignored. Repeated unmount
+  callbacks from a composite device are harmless.
+- Clear staging even on saturation. When a host stalls beyond finite capacity,
+  keep the latest state per report and deliver it after the FIFO drains. This
+  preserves eventual release, but cannot preserve unlimited keystrokes during a
+  prolonged stall. The host receive side applies backpressure at 64 queued states.
+- Preserve Pause / Tab+arrows monitor events `FFFC:0001..0004` and physical
+  passthrough. Monitor now includes boot-array KEYUP events. D13 uses hardware PWM
+  for auto-mode breathing, holds phase across heartbeats and turns off on OFF,
+  TTL or USB unmount. OFF-mode 50ms pulses come only from new physical KEYDOWN.
+
+```sh
+git submodule update --init
+python3 tools/patch-tinyusb.py
+python3 tests/test_hid_reliability.py
+cmake -S firmware -B firmware/build -DPICO_BOARD=feather_host -DCMAKE_BUILD_TYPE=Release
+cmake --build firmware/build --target remapper -j8
+```
+
+The host suite links the actual parser and mapping engine with AddressSanitizer
+and UBSan, including 10,000 taps / 20,000 ordered states, 100 detach/reconnect
+cycles, shared-key ownership, modifiers, NKRO and boot reports, truncation,
+rollover, saturation, delivery acknowledgements, monitor buffers, receive retries,
+shortcuts and LED timing. These tests mock USB/board functions. They do not prove
+physical PC reception, application behavior or long-duration hardware stability.
+Before promotion, test physical passthrough with Jarvis closed, injected
+hold/release/clear, simultaneous inputs, USB-A detach while holding a modifier and
+key, reconnect, sleep/resume, and at least two hours or 10,000 hardware taps with
+zero stuck keys. Unplugging USB-C removes the channel needed to send KEYUP and is
+a different scenario from the USB-A disconnect fixed here.
+
 _For user documentation please see the project's website at [remapper.org](https://www.remapper.org/)._
 
 This is a configurable USB dongle that allows you to remap inputs from mice, keyboards and other devices. It works completely in hardware and requires no software running on the computer during normal use.

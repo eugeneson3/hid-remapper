@@ -32,6 +32,7 @@ enum class ConfigCommand : int8_t {
     CLEAR_QUIRKS = 23,
     ADD_QUIRK = 24,
     GET_QUIRK = 25,
+    SET_AUTO_ATTACK_STATE = 30,
     INJECT_KEY_DOWN = 26,
     INJECT_KEY_UP = 27,
     INJECT_CLEAR_KEYS = 28,

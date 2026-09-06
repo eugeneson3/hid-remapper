@@ -18,6 +18,7 @@
 #include <pico/unique_id.h>
 
 #include "activity_led.h"
+#include "hid_delivery.h"
 #include "config.h"
 #include "crc.h"
 #include "descriptor_parser.h"
@@ -71,15 +72,28 @@ void __no_inline_not_in_flash_func(sof_handler)(uint32_t frame_count) {
     sof_callback();
 }
 
+static HidDelivery deliveries[2];
+static bool wakeup_requested = false;
+
+void reset_usb_delivery() {
+    for (auto& delivery : deliveries) delivery.reset();
+    wakeup_requested = false;
+}
+
+void tud_hid_report_complete_cb(uint8_t instance, const uint8_t*, uint16_t) {
+    if (instance < 2) deliveries[instance].complete();
+}
+
+void tud_hid_report_failed_cb(uint8_t instance, hid_report_type_t type, const uint8_t*, uint16_t) {
+    if (instance < 2 && type == HID_REPORT_TYPE_INPUT) deliveries[instance].failed();
+}
+
 bool do_send_report(uint8_t interface, const uint8_t* report_with_id, uint8_t len) {
-    if (tud_suspended() &&
-        (our_descriptor->should_cause_wakeup != nullptr) &&
-        our_descriptor->should_cause_wakeup(report_with_id[0], report_with_id + 1, len - 1)) {
-        tud_remote_wakeup();
-    } else {
-        tud_hid_n_report(interface, report_with_id[0], report_with_id + 1, len - 1);
-    }
-    return true;  // XXX?
+    if (interface >= 2 || len == 0) return false;
+    return deliveries[interface].send([&]() {
+        return !tud_suspended() && tud_hid_n_ready(interface) &&
+            tud_hid_n_report(interface, report_with_id[0], report_with_id + 1, len - 1);
+    });
 }
 
 void gpio_pins_init() {
@@ -264,18 +278,12 @@ int main() {
         bool tick;
         bool new_report;
         read_report(&new_report, &tick);
-        if (new_report) {
-            activity_led_on();
-        }
         if (their_descriptor_updated) {
             update_their_descriptor_derivates();
             their_descriptor_updated = false;
         }
         if (tick) {
-            bool gpio_state_changed = read_gpio(time_us_64());
-            if (gpio_state_changed) {
-                activity_led_on();
-            }
+            read_gpio(time_us_64());
 #ifdef ADC_ENABLED
             read_adc();
 #endif
@@ -287,6 +295,8 @@ int main() {
         }
         tud_task();
         if (boot_protocol_updated) {
+            reset_usb_delivery();
+            reset_output_reports();
             parse_our_descriptor();
             boot_protocol_updated = false;
             config_updated = true;
@@ -303,12 +313,13 @@ int main() {
             set_gpio_dir();
             set_gpio_dir_pending = false;
         }
-        if (tud_hid_n_ready(0) || tud_suspended()) {
-            send_report(do_send_report);
+        if (!tud_suspended()) wakeup_requested = false;
+        if (tud_suspended() && !wakeup_requested && pending_report_wakes_host()) {
+            wakeup_requested = tud_remote_wakeup();
         }
-        if (monitor_enabled && tud_hid_n_ready(1)) {
-            send_monitor_report(do_send_report);
-        }
+        // Also poll while not ready to consume completion acknowledgements.
+        send_report(do_send_report);
+        send_monitor_report(do_send_report);
         if (our_descriptor->main_loop_task != nullptr) {
             our_descriptor->main_loop_task();
         }

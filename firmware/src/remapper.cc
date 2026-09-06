@@ -9,6 +9,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "activity_led.h"
 #include "config.h"
 #include "crc.h"
 #include "descriptor_parser.h"
@@ -74,11 +75,19 @@ uint8_t* report_masks_relative[MAX_INPUT_REPORT_ID + 1];
 uint8_t* report_masks_absolute[MAX_INPUT_REPORT_ID + 1];
 uint16_t report_sizes[MAX_INPUT_REPORT_ID + 1];
 
-#define OR_BUFSIZE 8
+#define OR_BUFSIZE 128
 uint8_t outgoing_reports[OR_BUFSIZE][MAX_REPORT_SIZE + 1];
 uint8_t or_head = 0;
 uint8_t or_tail = 0;
 uint8_t or_items = 0;
+// Saturation recovery stores the latest state for each report separately from
+// the FIFO. Never overwrite an in-flight report or leave staging bits set.
+uint8_t deferred_reports[MAX_INPUT_REPORT_ID + 1][MAX_REPORT_SIZE];
+bool deferred_valid[MAX_INPUT_REPORT_ID + 1] = {};
+bool output_backpressure = false;
+uint32_t output_overflows = 0;
+std::unordered_map<uint32_t, std::set<uint32_t>> physical_keys;
+uint8_t shortcut_state = 0;
 
 std::vector<uint8_t> report_ids;
 
@@ -113,6 +122,8 @@ std::unordered_map<uint32_t, int32_t> monitor_input_state;
 uint8_t monitor_usages_queued = 0;
 monitor_report_t monitor_report[2] = { { .report_id = REPORT_ID_MONITOR }, { .report_id = REPORT_ID_MONITOR } };
 uint8_t monitor_report_idx = 0;
+uint8_t monitor_pending_count = 0;
+uint8_t monitor_pending_index = 0;
 
 #define NREGISTERS 32
 int32_t registers[NREGISTERS] = { 0 };
@@ -172,6 +183,7 @@ static void apply_usage_to_reports(uint32_t usage) {
             const uint8_t report_id = array_usage.usage_def.report_id;
             for (unsigned int i = 0; i < array_usage.usage_def.count; i++) {
                 int32_t existing_val = get_bits(reports[report_id], report_sizes[report_id], array_usage.usage_def.bitpos + i * array_usage.usage_def.size, array_usage.usage_def.size);
+                if (existing_val == array_usage.usage_def.logical_minimum + usage - array_usage.usage) return;
                 if (existing_val == 0) {
                     put_bits(reports[report_id], report_sizes[report_id], array_usage.usage_def.bitpos + i * array_usage.usage_def.size, array_usage.usage_def.size, array_usage.usage_def.logical_minimum + usage - array_usage.usage);
                     return;
@@ -227,8 +239,8 @@ inline int8_t get_bit(const uint8_t* data, int len, uint16_t bitpos) {
 
 inline uint32_t get_bits(const uint8_t* data, int len, uint16_t bitpos, uint8_t size) {
     uint32_t value = 0;
-    for (int i = 0; i < size; i++) {
-        value |= get_bit(data, len, bitpos + i) << i;
+    for (int i = 0; i < size && i < 32; i++) {
+        value |= (uint32_t)get_bit(data, len, bitpos + i) << i;
     }
     return value;
 }
@@ -244,7 +256,8 @@ inline void put_bit(uint8_t* data, int len, uint16_t bitpos, uint8_t value) {
 
 inline void put_bits(uint8_t* data, int len, uint16_t bitpos, uint8_t size, uint32_t value) {
     for (int i = 0; i < size; i++) {
-        put_bit(data, len, bitpos + i, (value >> i) & 1);
+        // Descriptor masks can cover an array wider than a 32-bit scalar.
+        put_bit(data, len, bitpos + i, i < 32 ? ((value >> i) & 1) : (value == UINT32_MAX));
     }
 }
 
@@ -1165,7 +1178,7 @@ void process_mapping(bool auto_repeat) {
 
     uint64_t now = get_time();
     expire_injected_usages(now);
-    frame_counter++;
+    if (auto_repeat) frame_counter++;
 
     for (auto& tap_hold : tap_hold_usages) {
         if ((*tap_hold.input_state != 0) && (*(tap_hold.input_state + PREV_STATE_OFFSET) == 0)) {
@@ -1398,7 +1411,7 @@ void process_mapping(bool auto_repeat) {
             apply_usage_to_reports(usage);
         }
         if (macro_queue.front().duration_left > 0) {
-            macro_queue.front().duration_left--;
+            if (auto_repeat) macro_queue.front().duration_left--;
         } else {
             if (or_items == 0) {
                 macro_queue.pop();
@@ -1442,12 +1455,16 @@ void process_mapping(bool auto_repeat) {
             our_descriptor->sanitize_report(report_id, reports[report_id], report_sizes[report_id]);
         }
         if (needs_to_be_sent(report_id)) {
-            if (or_items == OR_BUFSIZE) {
-                printf("overflow!\n");
-                break;
+            if (or_items == OR_BUFSIZE && !output_backpressure) {
+                output_backpressure = true;
+                output_overflows++;
             }
             uint8_t prev = (or_tail + OR_BUFSIZE - 1) % OR_BUFSIZE;
-            if ((or_items > 0) &&
+            if (output_backpressure) {
+                memcpy(deferred_reports[report_id], reports[report_id], report_sizes[report_id]);
+                memcpy(prev_reports[report_id], reports[report_id], report_sizes[report_id]);
+                deferred_valid[report_id] = true;
+            } else if ((or_items > 1) &&
                 (outgoing_reports[prev][0] == report_id) &&
                 !differ_on_absolute(outgoing_reports[prev] + 1, reports[report_id], report_id)) {
                 aggregate_relative(outgoing_reports[prev] + 1, reports[report_id], report_id);
@@ -1478,39 +1495,76 @@ void process_mapping(bool auto_repeat) {
     processing_time += get_time() - now;
 }
 
+bool input_queue_has_room() {
+    // Reserve four output reports for each of 16 already-armed HID interfaces.
+    // Re-arm only below half capacity; ordinary keyboards use one report.
+    return !output_backpressure && or_items < OR_BUFSIZE / 2;
+}
+
+bool pending_report_wakes_host() {
+    if (!our_descriptor->should_cause_wakeup) return false;
+    for (uint8_t i = 0; i < or_items; ++i) {
+        const uint8_t* report = outgoing_reports[(or_head + i) % OR_BUFSIZE];
+        if (our_descriptor->should_cause_wakeup(report[0], report + 1, report_sizes[report[0]])) return true;
+    }
+    for (uint8_t id : report_ids) {
+        if (deferred_valid[id] && our_descriptor->should_cause_wakeup(id, deferred_reports[id], report_sizes[id])) return true;
+    }
+    return false;
+}
+
+void reset_output_reports() {
+    or_head = or_tail = or_items = 0;
+    output_backpressure = false;
+    memset(deferred_valid, 0, sizeof(deferred_valid));
+    monitor_pending_count = monitor_usages_queued = 0;
+    for (auto& report : monitor_report) memset(&report.items, 0, sizeof(report.items));
+    for (uint8_t id : report_ids) {
+        memset(prev_reports[id], 0, report_sizes[id]);
+        memset(reports[id], 0, report_sizes[id]);
+    }
+}
+
 bool send_report(send_report_t do_send_report) {
-    if (suspended || (or_items == 0)) {
-        return false;
-    }
-
+    if (suspended || or_items == 0) return false;
     uint8_t report_id = outgoing_reports[or_head][0];
-
-    bool sent = false;
-    if (our_descriptor == &our_descriptors[our_descriptor_number]) {
-        sent = do_send_report(0, outgoing_reports[or_head], report_sizes[report_id] + 1);
+    const bool compatible = our_descriptor == &our_descriptors[our_descriptor_number];
+    const bool sent = compatible && do_send_report(0, outgoing_reports[or_head], report_sizes[report_id] + 1);
+    if (!compatible || sent) {
+        or_head = (or_head + 1) % OR_BUFSIZE;
+        or_items--;
+        if (sent) reports_sent++;
+        if (or_items == 0 && output_backpressure) {
+            for (uint8_t id : report_ids) {
+                if (deferred_valid[id]) {
+                    outgoing_reports[or_tail][0] = id;
+                    memcpy(outgoing_reports[or_tail] + 1, deferred_reports[id], report_sizes[id]);
+                    or_tail = (or_tail + 1) % OR_BUFSIZE;
+                    or_items++;
+                }
+            }
+            memset(deferred_valid, 0, sizeof(deferred_valid));
+            output_backpressure = false;
+        }
     }
-
-    // XXX even if not sent?
-    or_head = (or_head + 1) % OR_BUFSIZE;
-    or_items--;
-
-    reports_sent++;
-
     return sent;
 }
 
 bool send_monitor_report(send_report_t do_send_report) {
-    if ((monitor_usages_queued == 0) || suspended) {
-        return false;
+    // Seal a complete frame before submitting it; newly arriving events go to
+    // the other buffer and must never mutate the frame awaiting completion.
+    if (suspended) return false;
+    if (monitor_pending_count == 0) {
+        if (monitor_usages_queued == 0) return false;
+        monitor_pending_index = monitor_report_idx;
+        monitor_pending_count = monitor_usages_queued;
+        monitor_report_idx = (monitor_report_idx + 1) % 2;
+        memset(&monitor_report[monitor_report_idx].items, 0, sizeof(monitor_report[0].items));
+        monitor_usages_queued = 0;
     }
-
-    bool sent = do_send_report(1, (uint8_t*) &monitor_report[monitor_report_idx], sizeof(monitor_report_t));
-
-    monitor_report_idx = (monitor_report_idx + 1) % 2;
-    memset(&(monitor_report[monitor_report_idx].items), 0, sizeof(monitor_report[0].items));
-    monitor_usages_queued = 0;
-
-    return sent;
+    if (!do_send_report(1, (uint8_t*)&monitor_report[monitor_pending_index], sizeof(monitor_report_t))) return false;
+    monitor_pending_count = 0;
+    return true;
 }
 
 void monitor_usage(uint32_t usage, int32_t value, uint8_t hub_port) {
@@ -1530,7 +1584,7 @@ inline void read_input(const uint8_t* report, int len, uint32_t source_usage, co
         for (unsigned int i = 0; i < their_usage.count; i++) {
             uint32_t bits = get_bits(report, len, their_usage.bitpos + i * their_usage.size, their_usage.size);
             if (((their_usage.index_mask == 0) && (bits == their_usage.index)) ||
-                (their_usage.index_mask & (1 << bits))) {
+                (bits < 32 && (their_usage.index_mask & (1u << bits)))) {
                 value = 1;
                 break;
             }
@@ -1570,7 +1624,10 @@ inline void read_input(const uint8_t* report, int len, uint32_t source_usage, co
             }
         }
         if (their_usage.input_state_n != NULL) {
-            *(their_usage.input_state_n) = scaled_value;
+            if (their_usage.size == 1 || their_usage.is_array) {
+                if (value) *their_usage.input_state_n |= 1u << interface_idx;
+                else *their_usage.input_state_n &= ~(1u << interface_idx);
+            } else *their_usage.input_state_n = scaled_value;
         }
     }
 }
@@ -1590,7 +1647,7 @@ inline void read_input_range(const uint8_t* report, int len, uint32_t source_usa
             if (hub_port != HUB_PORT_NONE) {
                 int32_t* state_ptr_n = get_state_ptr(actual_usage, hub_port);
                 if (state_ptr_n != NULL) {
-                    *state_ptr_n = 1 << interface_idx;  // set the bit because in do_handle_received_report we clear it not knowing if it's "0" or "n"
+                    *state_ptr_n |= 1u << interface_idx;  // set the bit because in do_handle_received_report we clear it not knowing if it's "0" or "n"
                 }
             }
         }
@@ -1603,7 +1660,7 @@ inline void monitor_read_input(const uint8_t* report, int len, uint32_t source_u
         for (unsigned int i = 0; i < their_usage.count; i++) {
             uint32_t bits = get_bits(report, len, their_usage.bitpos + i * their_usage.size, their_usage.size);
             if (((their_usage.index_mask == 0) && (bits == their_usage.index)) ||
-                (their_usage.index_mask & (1 << bits))) {
+                (bits < 32 && (their_usage.index_mask & (1u << bits)))) {
                 value = 1;
                 break;
             }
@@ -1656,9 +1713,70 @@ inline void monitor_read_input_range(const uint8_t* report, int len, uint32_t so
     }
 }
 
+static std::set<uint32_t> all_physical_keys() {
+    std::set<uint32_t> result;
+    for (const auto& item : physical_keys) result.insert(item.second.begin(), item.second.end());
+    return result;
+}
+
+static void update_shortcuts(const std::set<uint32_t>& keys, uint8_t hub_port) {
+    const bool tab = keys.count(0x0007002B);
+    uint8_t state = (keys.count(0x00070048) || (tab && keys.count(0x00070052))) ? 1 : 0;
+    if (tab && keys.count(0x00070051)) state |= 2;
+    if (tab && keys.count(0x00070050)) state |= 4;
+    if (tab && keys.count(0x0007004F)) state |= 8;
+    for (uint8_t bit = 0; bit < 4; ++bit) {
+        if ((state & ~shortcut_state) & (1u << bit)) {
+            if (monitor_enabled) monitor_usage(0xFFFC0001u + bit, 1, hub_port);
+        }
+    }
+    shortcut_state = state;
+}
+
+static void observe_keyboard(const uint8_t* report, int len, uint16_t interface, uint8_t id, uint8_t hub_port) {
+    std::set<uint32_t> keys;
+    bool keyboard_report = false;
+    for (const auto& item : their_usages[interface][id]) {
+        const uint32_t usage = item.first;
+        const auto& def = item.second;
+        if ((usage >> 16) != 7) continue;
+        keyboard_report = true;
+        if (def.is_array) {
+            for (unsigned i = 0; i < def.count; ++i) {
+                uint32_t value = get_bits(report, len, def.bitpos + i * def.size, def.size);
+                if (def.usage_maximum) {
+                    if (value < def.logical_minimum || value > def.logical_minimum + def.usage_maximum - usage) continue;
+                    uint32_t actual = usage + value - def.logical_minimum;
+                    if ((actual & 0xFFFF) >= 4) keys.insert(actual);
+                } else if (value == def.index || (value < 32 && (def.index_mask & (1u << value)))) {
+                    if ((usage & 0xFFFF) >= 4) keys.insert(usage);
+                }
+            }
+        } else if ((usage & 0xFFFF) >= 4 && get_bits(report, len, def.bitpos, def.size)) {
+            keys.insert(usage);
+        }
+    }
+    if (!keyboard_report) return;
+    auto before = all_physical_keys();
+    physical_keys[((uint32_t)interface << 8) | id] = std::move(keys);
+    auto after = all_physical_keys();
+    for (uint32_t usage : before) if (!after.count(usage) && monitor_enabled) monitor_usage(usage, 0, hub_port);
+    for (uint32_t usage : after) if (!before.count(usage)) {
+        activity_led_on();
+        if (monitor_enabled) monitor_usage(usage, 1, hub_port);
+    }
+    update_shortcuts(after, hub_port);
+}
+
 void handle_received_report(const uint8_t* report, int len, uint16_t interface, uint8_t external_report_id) {
+    if (interface_index.count(interface) == 0) return; // late completion after detach
+    if (their_descriptor_updated) {
+        update_their_descriptor_derivates();
+        their_descriptor_updated = false;
+    }
     if (our_descriptor->handle_received_report != nullptr) {
         our_descriptor->handle_received_report(report, len, interface, external_report_id);
+        process_mapping(false); // preserve DOWN then UP within a single USB task
     }
 }
 
@@ -1706,7 +1824,14 @@ void do_handle_received_report(const uint8_t* report, int len, uint16_t interfac
         active_ports_mask |= 1 << hub_port;
     }
 
+    // A truncated report is not an all-keys-up report.
+    for (const auto& item : their_usages[interface][report_id]) {
+        const auto& def = item.second;
+        unsigned bits = def.bitpos + def.size * (def.is_array ? def.count : 1);
+        if (bits > (unsigned)len * 8) { my_mutex_exit(MutexId::THEIR_USAGES); return; }
+    }
     if (!is_rollover(report, len, interface, report_id)) {
+        observe_keyboard(report, len, interface, report_id, hub_port);
         for (int32_t* state_ptr : array_range_usages[interface][report_id]) {
             *state_ptr &= ~(1 << interface_idx);
         }
@@ -1722,6 +1847,7 @@ void do_handle_received_report(const uint8_t* report, int len, uint16_t interfac
 
     if (monitor_enabled) {
         for (auto const& [their_usage, their_usage_def] : their_usages[interface][report_id]) {
+            if ((their_usage >> 16) == 7) continue; // tracked above, including array KEYUP
             if (their_usage_def.usage_maximum == 0) {
                 monitor_read_input(report, len, their_usage, their_usage_def, interface_idx, hub_port);
             } else {
@@ -2130,6 +2256,37 @@ void device_connected_callback(uint16_t interface, uint16_t vid, uint16_t pid, u
 }
 
 void device_disconnected_callback(uint8_t dev_addr) {
+    // Clear only the departing device's bits BEFORE descriptor/index removal.
+    // Other physical keyboards and injected_usages remain independent owners.
+    uint32_t mask = 0;
+    for (const auto& item : interface_index) if ((item.first >> 8) == dev_addr) mask |= 1u << item.second;
+    if (!mask) return; // composite device unmount callbacks are idempotent
+    auto before = all_physical_keys();
+    for (auto it = physical_keys.begin(); it != physical_keys.end();) {
+        if ((it->first >> 16) == dev_addr) it = physical_keys.erase(it); else ++it;
+    }
+    auto after = all_physical_keys();
+    const uint8_t port = hub_ports.count(dev_addr) ? hub_ports[dev_addr] : HUB_PORT_NONE;
+    for (uint32_t usage : before) if (!after.count(usage) && monitor_enabled) monitor_usage(usage, 0, port);
+    update_shortcuts(after, port);
+    std::unordered_set<int32_t*> binary;
+    std::unordered_set<int32_t*> scalar;
+    for (const auto& item : array_range_usages) if ((item.first >> 8) == dev_addr)
+        for (const auto& rep : item.second) for (auto ptr : rep.second) binary.insert(ptr);
+    for (const auto& item : their_used_usages) if ((item.first >> 8) == dev_addr)
+        for (const auto& rep : item.second) for (const auto& usage : rep.second) {
+            const auto& def = usage.usage_def;
+            if (def.usage_maximum) continue;
+            auto& set = (!def.is_relative && (def.size == 1 || def.is_array)) ? binary : scalar;
+            if (def.input_state_0) set.insert(def.input_state_0);
+            if (def.input_state_n) set.insert(def.input_state_n);
+        }
+    for (auto ptr : binary) {
+        *ptr &= ~mask;
+        ptr[PREV_STATE_OFFSET] &= ~mask; // detach must not synthesize tap actions
+        if (*ptr == 0) { sticky_state[ptr - input_state] = 0; tap_hold_state[ptr - input_state] = {}; }
+    }
+    for (auto ptr : scalar) { *ptr = 0; ptr[PREV_STATE_OFFSET] = 0; }
     if (our_descriptor->device_disconnected != nullptr) {
         our_descriptor->device_disconnected(dev_addr);
     }
@@ -2139,6 +2296,9 @@ void device_disconnected_callback(uint8_t dev_addr) {
         active_ports_mask &= ~(1 << hub_port);
     }
     hub_ports.erase(dev_addr);
+    update_their_descriptor_derivates();
+    their_descriptor_updated = false;
+    process_mapping(false); // enqueue the merged release without waiting for another input
 }
 
 uint16_t handle_get_report0(uint8_t report_id, uint8_t* buffer, uint16_t reqlen) {
