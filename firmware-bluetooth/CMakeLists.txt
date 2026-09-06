@@ -3,6 +3,7 @@ cmake_minimum_required(VERSION 3.20.0)
 set(BOARD_ROOT ${CMAKE_CURRENT_LIST_DIR})
 
 add_compile_definitions(PERSISTED_CONFIG_SIZE=2048)
+add_compile_definitions(JARVIS_BLUETOOTH=1)
 
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(NONE)

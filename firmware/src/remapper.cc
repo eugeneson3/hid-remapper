@@ -1762,7 +1762,9 @@ static void observe_keyboard(const uint8_t* report, int len, uint16_t interface,
     auto after = all_physical_keys();
     for (uint32_t usage : before) if (!after.count(usage) && monitor_enabled) monitor_usage(usage, 0, hub_port);
     for (uint32_t usage : after) if (!before.count(usage)) {
+#ifndef JARVIS_BLUETOOTH
         activity_led_on();
+#endif
         if (monitor_enabled) monitor_usage(usage, 1, hub_port);
     }
     update_shortcuts(after, hub_port);
@@ -1776,7 +1778,9 @@ void handle_received_report(const uint8_t* report, int len, uint16_t interface, 
     }
     if (our_descriptor->handle_received_report != nullptr) {
         our_descriptor->handle_received_report(report, len, interface, external_report_id);
+#ifndef JARVIS_BLUETOOTH
         process_mapping(false); // preserve DOWN then UP within a single USB task
+#endif
     }
 }
 

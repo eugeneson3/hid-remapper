@@ -11,3 +11,4 @@
 - A full queue records the latest state for each report, always clears staging, and converges after draining. Finite buffers cannot preserve unlimited input during USB suspension.
 - D13 PWM activity is triggered only by physical keyboard DOWN; auto mode owns breathing and expires on OFF/TTL/USB unmount. Do not control the CHG LED.
 - Do not overwrite the Jarvis stable or nightly_v2 image. Hardware validation and promotion require explicit evidence; host mocks do not prove PC/application delivery.
+- Both RP2040 workflows must apply the TinyUSB guard and run the host tests. The Bluetooth build defines JARVIS_BLUETOOTH and keeps its existing LED/tick scheduling; do not link RP2040 activity or tick helpers into Zephyr.

@@ -51,6 +51,10 @@ key, reconnect, sleep/resume, and at least two hours or 10,000 hardware taps wit
 zero stuck keys. Unplugging USB-C removes the channel needed to send KEYUP and is
 a different scenario from the USB-A disconnect fixed here.
 
+Both `build-feather` and `build-rp2040` CI apply the same TinyUSB patch and host
+suite. The shared Bluetooth build retains its own LED and tick scheduling via
+`JARVIS_BLUETOOTH`; RP2040 activity/tick helpers are not linked into Zephyr.
+
 _For user documentation please see the project's website at [remapper.org](https://www.remapper.org/)._
 
 This is a configurable USB dongle that allows you to remap inputs from mice, keyboards and other devices. It works completely in hardware and requires no software running on the computer during normal use.

@@ -1119,27 +1119,35 @@ void handle_set_report1(uint8_t report_id, uint8_t const* buffer, uint16_t bufsi
                 case ConfigCommand::INJECT_KEY_DOWN: {
                     inject_key_t* key = (inject_key_t*) config_buffer->data;
                     inject_key_down(key->usage, key->ttl_ms);
+#ifndef JARVIS_BLUETOOTH
                     process_mapping(false);
                     set_tick_pending();
+#endif
                     break;
                 }
                 case ConfigCommand::INJECT_KEY_UP: {
                     inject_key_t* key = (inject_key_t*) config_buffer->data;
                     inject_key_up(key->usage);
+#ifndef JARVIS_BLUETOOTH
                     process_mapping(false);
                     set_tick_pending();
+#endif
                     break;
                 }
                 case ConfigCommand::INJECT_CLEAR_KEYS:
                     inject_clear_keys();
+#ifndef JARVIS_BLUETOOTH
                     process_mapping(false);
                     set_tick_pending();
+#endif
                     break;
+#ifndef JARVIS_BLUETOOTH
                 case ConfigCommand::SET_AUTO_ATTACK_STATE: {
                     const uint8_t* data = config_buffer->data;
                     activity_led_set_auto_attack(data[0] != 0, (uint16_t)data[1] | ((uint16_t)data[2] << 8));
                     break;
                 }
+#endif
                 default:
                     last_config_command = ConfigCommand::INVALID_COMMAND;
                     break;

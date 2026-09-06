@@ -3,6 +3,8 @@ on:
   push:
     paths:
       - 'firmware/**'
+      - 'tests/**'
+      - 'tools/patch-tinyusb.py'
       - '.github/workflows/build-feather.yml'
   workflow_dispatch:
 defaults:
@@ -19,6 +21,10 @@ jobs:
         run: |
           sudo apt update
           sudo apt install -y --no-install-recommends gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib srecord
+      - name: Patch pinned TinyUSB and test HID reliability
+        run: |
+          python3 tools/patch-tinyusb.py
+          python3 tests/test_hid_reliability.py
       - name: Build Feather RP2040 USB Host firmware
         run: |
           mkdir build-feather
